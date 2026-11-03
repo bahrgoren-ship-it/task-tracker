@@ -1,4 +1,4 @@
-# Task tracker — data schema (schema_version 2)
+# Task tracker — data schema (schema_version 3)
 
 The tracker's data lives in ONE Google Sheet:
 
@@ -36,7 +36,7 @@ Rules for anyone (human or AI) who edits it:
 | `links` | URLs or `Technion Studies/...` paths, one per line. |
 | `source` | `manual` · `moodle` · `class` · `notion` (imported from the old Notion table on 2026-11-03). |
 | `moodle_ref` | `post:<id>` or `assign:<id>` when the task came from Moodle. |
-| `calendar_event_id` | App-managed (deadline event in the "שיעורי בית – הגשות" calendar). |
+| `calendar_event_id` | App-managed: the deadline's event in the Google Calendar "משימות – הגשות". |
 | `created_at`, `updated_at` | Timestamps. |
 
 **Overdue** = `due_date` before today and `status` not `done`/`cancelled` (shown in red).
@@ -69,7 +69,7 @@ A task can have any number of blocks.
 | `task_id` | The `tasks.id` it belongs to. |
 | `start`, `end` | Date-times. Default length: `settings.default_block_minutes` (60). |
 | `state` | `draft` (planning, never on the calendar) · `planned` · `done` · `skipped` |
-| `sync_calendar` | `TRUE` = keep in the "שיעורי בית – בלוקי עבודה" Google Calendar (two-way sync). |
+| `sync_calendar` | Empty = follow the setting `sync_blocks_to_calendar`; `FALSE` = never put this block in the calendar. |
 | `calendar_event_id` | App-managed. |
 | `note` | Optional: what to do in this block. |
 | `updated_at` | Timestamp. |
@@ -84,16 +84,31 @@ Per task: planned hours = sum of `planned`+`done` blocks; done hours = sum of `d
 
 ## Tab `moodle_inbox` — new Moodle items waiting for Bahr's decision (app-managed)
 
-`id`, `course`, `kind` (`announcement` · `assignment`), `moodle_ref` (dedup key), `posted_at`, `title`,
-`author`, `text`, `detected_dates`, `url`, `status` (`new` · `accepted` · `ignored`), `task_id`.
-Nothing here becomes a task until Bahr accepts it (an AI may *suggest*, Bahr confirms).
+`id`, `course`, `kind`, `moodle_ref` (dedup key), `posted_at`, `title`, `author`, `text`, `detected_dates`
+(comma-separated `yyyy-mm-dd` or `yyyy-mm-dd HH:MM`), `url`, `status` (`new` · `accepted` · `ignored`), `task_id`.
+
+Filled every ~15 min by the backend from Technion Moodle (`moodle26.technion.ac.il`, Bahr's Moodle token in Script
+Properties): `kind` = `announcement` (a post on a course's לוח הודעות, `moodle_ref` = `post:<discussion id>`),
+`assignment` (an assignment with a due date, `assign:<id>`), or `date_change` (an assignment Bahr already has as a
+task whose Moodle due date differs; `assign:<id>@<new date>`, `task_id` = that task).
+Nothing here becomes a task until Bahr accepts it (an AI may *suggest*, Bahr confirms). A task created from an item
+gets `source=moodle` and the item's `moodle_ref`.
 
 ## Tab `settings`
 
 Key/value pairs: `sync_deadlines_to_calendar`, `sync_blocks_to_calendar`, `default_block_minutes`,
 `week_starts_on`, `timezone`, `moodle_check_minutes`, `pomodoro_focus_minutes` (25), `pomodoro_short_break_minutes` (5),
 `pomodoro_long_break_minutes` (15), `pomodoro_long_break_every` (4), `pomodoro_auto_start_breaks` (TRUE),
-`active_timer` (app-managed JSON of the running timer, shared by all devices — don't edit), `schema_version`.
+`active_timer` (app-managed JSON of the running timer, shared by all devices — don't edit), `deadline_calendar_id`,
+`blocks_calendar_id`, `calendar_last_sync`, `moodle_last_check`, `moodle_status` (all app-managed), `schema_version`.
+
+## Google Calendar (optional, switched on in the app's settings)
+
+- `sync_deadlines_to_calendar=TRUE` → each task with a due date is an all-day event in the calendar **משימות – הגשות**
+  (⏰ open / ✓ done; cancelled or deleted tasks are removed). One-way: Sheet → Calendar.
+- `sync_blocks_to_calendar=TRUE` → planned and done work blocks are events in **משימות – בלוקי עבודה**. Two-way:
+  moving an event there changes the block's times; deleting it deletes the block. Drafts never go to the calendar.
+- The planner also shows Bahr's other calendars as grey "busy" time (read-only).
 
 ## How programs access the data
 
@@ -102,6 +117,8 @@ Key/value pairs: `sync_deadlines_to_calendar`, `sync_blocks_to_calendar`, `defau
 - **The app** (https://bahrgoren-ship-it.github.io/task-tracker/) talks to an Apps Script web app bound to the
   Sheet (code: `apps-script/Code.gs` in the GitHub repo `bahrgoren-ship-it/task-tracker`). API: POST JSON
   `{key, action}` with `action` = `ping` · `bootstrap` (returns all tabs) · `batch` (`ops: [{op:'upsert', table, row} |
-  {op:'delete', table, id}]`). The key is secret (Script Properties) — never write it into files.
+  {op:'delete', table, id}]`) · `busy` (`from`, `to` dates → events of Bahr's calendars) · `syncNow` · `moodleCheck` ·
+  `setMoodleToken` (`token`). The key is secret (Script Properties) — never write it into files.
+  A trigger runs `scheduledSync()` every 10 minutes (calendar two-way sync + Moodle check).
 - **An AI with Google Drive / Sheets access** (Gemini, Claude with the Drive connector) can read the Sheet directly.
   To change data, edit cells following the rules above, or ask Bahr to make the change in the app.

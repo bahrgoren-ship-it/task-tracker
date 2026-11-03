@@ -11,9 +11,11 @@ Bahr's task tracker (homework first; may grow to all tasks): a Hebrew (RTL) inst
 | `docs/js/store.js` | Local copy of the data + queue of unsent changes + calls to the backend. |
 | `docs/js/dates.js` | Date helpers (everything in Israel time, strings `yyyy-mm-dd` / `HH:MM`). |
 | `docs/js/timer.js` | Stopwatch / pomodoro. State lives in the Sheet (`settings.active_timer`) so devices share it; focus time is saved to `sessions`. |
+| `docs/js/planner.js` | Planner: custom RTL week grid, drag tasks from the tray into work blocks (`blocks`), move/resize, tap-to-place, "אשר תכנון", busy layer from Google Calendar. No external libraries. |
+| `docs/js/inbox.js` | "הודעות" screen: `moodle_inbox` items → create task / update date / ignore. |
 | `docs/js/demo.js` | In-browser fake backend ("demo mode"). Keep its API identical to the real one. |
 | `docs/sw.js` | Service worker (offline). **Bump `VERSION` whenever anything in `docs/` changes.** |
-| `apps-script/Code.gs` | Backend: Google Apps Script bound to the Sheet. JSON API: `ping`, `bootstrap`, `batch`. |
+| `apps-script/Code.gs` | Backend: Google Apps Script bound to the Sheet. JSON API (`ping`, `bootstrap`, `batch`, `busy`, `syncNow`, `moodleCheck`, `setMoodleToken`), schema migration, Google Calendar sync, Moodle check, 10-minute trigger. |
 | `SETUP.md` | How Bahr installs/updates the backend and connects devices. |
 
 ## Rules
@@ -27,6 +29,7 @@ Bahr's task tracker (homework first; may grow to all tasks): a Hebrew (RTL) inst
 - Test UI changes in demo mode (settings → "נסה במצב הדגמה") on phone, iPad and desktop widths.
 
 ## Roadmap
-1. ✅ Sheet + Notion import. 2. ✅ Tasks screen + time tracking (estimate, total, stopwatch/pomodoro). 3. Planner (drag tasks into a week grid → work blocks) +
-Google Calendar sync (optional, two-way for blocks). 4. Moodle announcements inbox (Apps Script reads each course's
-לוח הודעות via the Moodle API every 15 min) + Windows Task Scheduler for the file sync. 5. AI procedures.
+1. ✅ Sheet + Notion import. 2. ✅ Tasks screen + time tracking (estimate, total, stopwatch/pomodoro).
+3. ✅ Planner + Google Calendar sync (deadlines one-way, work blocks two-way). 4. ✅ Moodle inbox (announcements +
+assignments, every 15 min); ⏳ Windows Task Scheduler for the file sync (moodle-dl) on Bahr's PC. 5. AI procedures.
+Tests (Playwright + fake Apps Script services) are not in the repo; keep behaviour covered when changing things.

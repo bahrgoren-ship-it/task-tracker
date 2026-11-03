@@ -35,6 +35,7 @@ class Store {
     this.status = 'idle';                     // idle | syncing | offline | error
     this.error = '';
     this.lastSync = lsGet('ht.lastSync', '');
+    this.apiVersion = lsGet('ht.apiVersion', 0);   // backend version: 3+ has calendar & Moodle features
     this.listeners = new Set();
     this._flushTimer = null;
     this._demo = null;
@@ -97,6 +98,7 @@ class Store {
       try {
         await this.flush(true);
         const fresh = await this.call({ action: 'bootstrap' });
+        this.apiVersion = Number(fresh.api_version) || 1; lsSet('ht.apiVersion', this.apiVersion);
         const data = {};
         for (const t of Object.keys(EMPTY)) data[t] = fresh[t] || [];
         this.data = data;
@@ -198,6 +200,39 @@ class Store {
     return t && t.spent_hours ? Math.round(Number(t.spent_hours) * 60) : 0;
   }
 
+  /* ---------- work blocks (planner) ---------- */
+  saveBlock(row) {
+    const full = { ...row, updated_at: nowStampIL() };
+    if (!full.id) { full.id = newId('b'); full.state = full.state || 'draft'; full.sync_calendar = full.sync_calendar ?? ''; full.calendar_event_id = ''; full.note = full.note || ''; }
+    this.change({ op: 'upsert', table: 'blocks', row: full });
+    return full.id;
+  }
+  deleteBlock(id) { this.change({ op: 'delete', table: 'blocks', id }); }
+  block(id) { return this.data.blocks.find((b) => b.id === id); }
+  blocksOf(taskId) { return this.data.blocks.filter((b) => b.task_id === taskId); }
+  // minutes in work blocks (all states except skipped)
+  plannedMinutes(taskId) {
+    return this.blocksOf(taskId).filter((b) => b.state !== 'skipped')
+      .reduce((s, b) => s + Math.max(0, minutesBetween(b.start, b.end)), 0);
+  }
+
+  /* ---------- Moodle inbox ---------- */
+  saveInbox(row) { this.change({ op: 'upsert', table: 'moodle_inbox', row }); }
+  inboxNew() { return this.data.moodle_inbox.filter((m) => m.status === 'new'); }
+
+  /* ---------- direct backend actions (v3+) ---------- */
+  async busy(from, to) {
+    if (!this.configured || this.apiVersion < 3) return null;
+    const k = `${from}|${to}`;
+    this._busy = this._busy || {};
+    const hit = this._busy[k];
+    if (hit && Date.now() - hit.at < 5 * 60000) return hit.data;
+    const data = await this.call({ action: 'busy', from, to });
+    this._busy[k] = { at: Date.now(), data };
+    return data;
+  }
+  async action(name, extra = {}) { return this.call({ action: name, ...extra }); }
+
   setSetting(key, value) { this.change({ op: 'upsert', table: 'settings', row: { key, value: String(value) } }); }
 
   task(id) { return this.data.tasks.find((t) => t.id === id); }
@@ -210,6 +245,12 @@ class Store {
   /* ---------- per-device UI prefs ---------- */
   ui(key, fallback) { return (lsGet(LS.ui, {}) || {})[key] ?? fallback; }
   setUi(key, value) { const u = lsGet(LS.ui, {}) || {}; u[key] = value; lsSet(LS.ui, u); }
+}
+
+function minutesBetween(a, b) {
+  if (!a || !b) return 0;
+  const t = (s) => Date.UTC(+s.slice(0, 4), +s.slice(5, 7) - 1, +s.slice(8, 10), +s.slice(11, 13), +s.slice(14, 16));
+  return Math.round((t(b) - t(a)) / 60000);
 }
 
 function isNetwork(e) {

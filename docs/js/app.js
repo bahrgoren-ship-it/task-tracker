@@ -2,6 +2,8 @@
 import { store } from './store.js';
 import { bucketOf, dueLabel, todayIL, addDays, shortDate, fmtMinutes, fmtClock, nowStampIL } from './dates.js';
 import * as timer from './timer.js';
+import * as planner from './planner.js';
+import * as inbox from './inbox.js';
 
 const SHEET_URL = 'https://docs.google.com/spreadsheets/d/10qLYln2zUiMo7dEI3xZ8pj4ncGX7TRmATZNuZfvUfWM/edit';
 
@@ -37,6 +39,12 @@ function boot() {
   $('#filters').addEventListener('click', onFilterClick);
   $('#main').addEventListener('click', onMainClick);
   $('#timerBar').addEventListener('click', onTimerBarClick);
+  document.querySelector('.tabbar').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-tab]'); if (b && !b.disabled) showTab(b.dataset.tab);
+  });
+  planner.initPlanner($('#planner'), { openEditor, openTimer, toast });
+  inbox.initInbox($('#inbox'), { openEditor, toast });
+  showTab(store.ui('tab', 'tasks'));
   document.addEventListener('timer:phase', (e) => toast(`${e.detail.title} · ${e.detail.body}`));
   document.addEventListener('timer:stopped', (e) => toast(e.detail.minutes
     ? `נשמרו ${e.detail.minutes} דק׳ ל„${store.task(e.detail.task_id)?.title || ''}”` : 'פחות מדקה — לא נשמר זמן'));
@@ -57,9 +65,30 @@ function boot() {
 // Re-draw the list only when something visible changed, so a tap is never lost to a
 // background sync re-rendering the cards under the finger.
 let lastSig = '';
+function showTab(name) {
+  if (!['tasks', 'planner', 'inbox'].includes(name)) name = 'tasks';
+  store.setUi('tab', name);
+  document.body.dataset.tab = name;
+  document.querySelectorAll('.tabbar [data-tab]').forEach((b) => b.classList.toggle('active', b.dataset.tab === name));
+  $('#main').hidden = name !== 'tasks';
+  $('#filters').hidden = name !== 'tasks';
+  $('#planner').hidden = name !== 'planner';
+  $('#inbox').hidden = name !== 'inbox';
+  $('#addBtn').hidden = name !== 'tasks';
+  if (name === 'planner') planner.render(true);
+  if (name === 'inbox') inbox.render(true);
+  window.scrollTo(0, 0);
+}
+
 function render() {
   renderSync();
   renderTimerBar();
+  planner.render();
+  inbox.render();
+  const n = store.inboxNew().length;
+  const badge = $('#inboxBadge');
+  badge.textContent = n > 99 ? '99+' : String(n);
+  badge.hidden = !n;
   if ($('#timerSheet').open) renderTimerSheet();
   const sig = JSON.stringify([store.data.tasks, store.data.sessions, store.setting('active_timer'), store.data.courses, store.ui('course', 'all'),
     store.ui('showDone', false), store.configured, store.status === 'syncing' && !store.data.tasks.length, todayIL()]);
@@ -211,11 +240,12 @@ function onMainClick(e) {
 
 /* ---------------------------------------------------------- editor ---- */
 
-function openEditor(id) {
+// opts.prefill: values for a new task (e.g. from a Moodle message); opts.onSaved(newId) after creating it.
+function openEditor(id, opts = {}) {
   const dlg = $('#editor');
   const t = id ? { ...store.task(id) } : {
     title: '', course: store.ui('course', 'all') === 'all' ? '' : store.ui('course', 'all'),
-    status: 'todo', due_date: '', due_time: '', estimate_hours: '', notes: '', links: '',
+    status: 'todo', due_date: '', due_time: '', estimate_hours: '', notes: '', links: '', ...(opts.prefill || {}),
   };
   const today = todayIL();
   const courses = activeCourses();
@@ -304,14 +334,18 @@ function openEditor(id) {
       for (const k of Object.keys(patch)) if ((orig[k] || '') === patch[k]) delete patch[k];
       if (Object.keys(patch).length) { store.saveTask({ id, ...patch }); toast('נשמר'); }
     } else {
-      store.saveTask(patch); toast('המשימה נוספה');
+      if (opts.prefill?.source) patch.source = opts.prefill.source;
+      if (opts.prefill?.moodle_ref) patch.moodle_ref = opts.prefill.moodle_ref;
+      const newId = store.saveTask(patch);
+      if (opts.onSaved) opts.onSaved(newId); else toast('המשימה נוספה');
     }
   });
   // time section
   const drawTime = () => {
     const spent = id ? store.spentMinutes(id) : 0;
     const est = Number(form.estimate_hours.value) || 0;
-    $('#spentLine', dlg).textContent = `${fmtMinutes(spent)} ש׳${est ? ` מתוך ${fmtMinutes(est * 60)}` : ''}`;
+    const planned = id ? store.plannedMinutes(id) : 0;
+    $('#spentLine', dlg).textContent = `${fmtMinutes(spent)} ש׳${est ? ` מתוך ${fmtMinutes(est * 60)}` : ''}${planned ? ` · מתוכנן ${fmtMinutes(planned)}` : ''}`;
     const bar = $('#spentBar', dlg);
     bar.hidden = !est;
     bar.classList.toggle('over', est > 0 && spent > est * 60);
@@ -386,6 +420,20 @@ function openSettings() {
         ${deviceLink ? `<button type="button" class="btn ghost" data-copy>העתק קישור הגדרה למכשיר נוסף</button>
           <p class="hint small">פתח את הקישור בטלפון / באייפד והמכשיר יתחבר. הקישור מכיל את המפתח — אל תשתף אותו.</p>` : ''}
         <hr>
+        <h3 class="sub-h">יומן Google</h3>
+        ${store.apiVersion && store.apiVersion < 3 ? '<p class="hint small">כדי להפעיל צריך קודם לעדכן את השרת (Apps Script) — ראה SETUP.md.</p>' : ''}
+        <label class="check"><input type="checkbox" data-set="sync_deadlines_to_calendar" ${store.setting('sync_deadlines_to_calendar') === 'TRUE' ? 'checked' : ''}> להציג תאריכי הגשה ביומן „משימות – הגשות”</label>
+        <label class="check"><input type="checkbox" data-set="sync_blocks_to_calendar" ${store.setting('sync_blocks_to_calendar') === 'TRUE' ? 'checked' : ''}> להציג בלוקי עבודה מאושרים ביומן „משימות – בלוקי עבודה” (דו-כיווני)</label>
+        <p class="hint small">סנכרון אחרון: ${esc(store.setting('calendar_last_sync') || '—')}</p>
+        <hr>
+        <h3 class="sub-h">מודל</h3>
+        <p class="hint small">מצב: <span dir="auto">${esc(store.setting('moodle_status') || 'לא מחובר')}</span>${store.setting('moodle_last_check') ? ` · נבדק ${esc(store.setting('moodle_last_check'))}` : ''}</p>
+        <div class="row wrap">
+          <label class="field grow"><span>Moodle token</span><input name="moodle_token" dir="ltr" autocomplete="off" placeholder="מתוך config.json → token"></label>
+          <button type="button" class="btn ghost" data-moodle>חבר</button>
+        </div>
+        <p class="hint small">ה-token נשמר רק בשרת שלך (Script Properties), לא בגיליון ולא באפליקציה.</p>
+        <hr>
         <h3 class="sub-h">פומודורו</h3>
         <div class="row wrap pomo">
           <label class="field"><span>ריכוז (דק׳)</span><input type="number" min="1" data-set="pomodoro_focus_minutes" value="${esc(timer.settingsP().focus)}"></label>
@@ -431,8 +479,23 @@ function openSettings() {
   });
   dlg.querySelectorAll('[data-set]').forEach((inp) => inp.addEventListener('change', () => {
     const v = inp.type === 'checkbox' ? (inp.checked ? 'TRUE' : 'FALSE') : String(Math.max(1, Math.round(Number(inp.value) || 1)));
-    store.setSetting(inp.dataset.set, v); toast('נשמר');
+    store.setSetting(inp.dataset.set, v);
+    toast(/calendar/.test(inp.dataset.set) && v === 'TRUE' ? 'נשמר — היומן יתעדכן בעוד רגע' : 'נשמר');
   }));
+  $('[data-moodle]', dlg)?.addEventListener('click', async () => {
+    const token = form.moodle_token.value.trim();
+    if (!token) { form.moodle_token.focus(); return; }
+    if (store.apiVersion < 3) { toast('צריך לעדכן את השרת קודם'); return; }
+    toast('בודק את ה-token…');
+    try {
+      const r = await store.action('setMoodleToken', { token });
+      form.moodle_token.value = '';
+      toast(`מודל מחובר — ${r.fullname || ''}`);
+      const c = await store.action('moodleCheck');
+      toast(c.added ? `נמצאו ${c.added} הודעות/מטלות במודל` : 'מודל מחובר, אין חדש');
+      store.refresh();
+    } catch (err) { toast(`לא הצלחתי להתחבר למודל: ${err.message}`); }
+  });
   $('[data-logout]', dlg)?.addEventListener('click', () => {
     if (store.queue.length && !confirm('יש שינויים שעוד לא נשלחו. לנתק בכל זאת?')) return;
     store.clearConfig(); dlg.close();

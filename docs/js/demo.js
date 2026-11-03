@@ -3,7 +3,7 @@
 
 import { todayIL, addDays, nowStampIL } from './dates.js';
 
-const LS_KEY = 'ht.demo.v2';
+const LS_KEY = 'ht.demo.v3';
 
 const COURSES = [
   ['ds-algs', 'מבני נתונים ואלגוריתמים', 'מבני נתונים', '#3B6FB6'],
@@ -36,11 +36,33 @@ function seed() {
       { id: 's_demo01', task_id: 't_demo02', start: `${addDays(t, -1)} 20:00`, end: `${addDays(t, -1)} 20:50`,
         minutes: '50', kind: 'pomodoro', note: '', updated_at: now },
     ],
-    blocks: [],
+    blocks: [
+      { id: 'b_demo01', task_id: 't_demo03', start: `${addDays(t, 1)} 10:00`, end: `${addDays(t, 1)} 12:00`, state: 'planned', sync_calendar: '', calendar_event_id: '', note: '', updated_at: now },
+      { id: 'b_demo02', task_id: 't_demo04', start: `${t} 18:00`, end: `${t} 19:00`, state: 'draft', sync_calendar: '', calendar_event_id: '', note: '', updated_at: now },
+    ],
     courses: COURSES,
     settings: [{ key: 'default_block_minutes', value: '60' }],
-    moodle_inbox: [],
+    moodle_inbox: [
+      { id: 'm_demo01', course: 'databases', kind: 'announcement', moodle_ref: 'post:1', posted_at: `${addDays(t, -1)} 21:04`,
+        title: 'עדכונים', author: 'אפק וקנין', text: 'שלום,\nההגשה של תרגיל בית 1 תהיה עד ה-' + `${+addDays(t, 9).slice(8)}.${+addDays(t, 9).slice(5, 7)}` + ' בשעה 23:59.\nבהצלחה!',
+        detected_dates: addDays(t, 9), url: 'https://moodle26.technion.ac.il', status: 'new', task_id: '' },
+      { id: 'm_demo02', course: 'statistics-1', kind: 'assignment', moodle_ref: 'assign:1', posted_at: `${t} 08:00`,
+        title: 'תרגיל בית 2', author: '', text: 'הגשה ביחידים, קובץ PDF אחד.', detected_dates: `${addDays(t, 6)} 23:59`,
+        url: 'https://moodle26.technion.ac.il', status: 'new', task_id: '' },
+    ],
   };
+}
+
+// fake personal calendar for the planner's "busy" layer
+function demoBusy(from, to) {
+  const out = [];
+  for (let d = from; d <= to; d = addDays(d, 1)) {
+    const wd = new Date(d + 'T12:00:00Z').getUTCDay();
+    if (wd === 0 || wd === 2) out.push({ title: 'הרצאה', start: `${d} 14:30`, end: `${d} 16:30`, all_day: false, calendar: 'טכניון', color: '#9E69AF' });
+    if (wd === 3) out.push({ title: 'תרגול', start: `${d} 10:30`, end: `${d} 12:30`, all_day: false, calendar: 'טכניון', color: '#9E69AF' });
+    if (wd === 5) out.push({ title: 'ארוחת שישי', start: `${d} 19:00`, end: `${d} 21:30`, all_day: false, calendar: 'אישי', color: '#33B679' });
+  }
+  return out;
 }
 
 export class DemoBackend {
@@ -51,8 +73,12 @@ export class DemoBackend {
 
   async handle(p) {
     await new Promise((r) => setTimeout(r, 150));
-    if (p.action === 'ping') return { api_version: 1, now: nowStampIL(), demo: true };
-    if (p.action === 'bootstrap') return structuredClone(this.db);
+    if (p.action === 'ping') return { api_version: 3, now: nowStampIL(), demo: true };
+    if (p.action === 'bootstrap') return { ...structuredClone(this.db), api_version: 3 };
+    if (p.action === 'busy') return demoBusy(p.from, p.to);
+    if (p.action === 'syncNow') return { calendar: { pulled: 0, pushed: 0 } };
+    if (p.action === 'moodleCheck') return { status: 'ok · 0 new (הדגמה)', added: 0 };
+    if (p.action === 'setMoodleToken') return { connected: true, fullname: 'הדגמה' };
     if (p.action === 'batch') {
       for (const o of p.ops) {
         const k = o.table === 'settings' ? 'key' : 'id';

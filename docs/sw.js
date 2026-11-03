@@ -1,10 +1,10 @@
 // Service worker: makes the app open offline. The app shell is served from cache and refreshed
 // in the background; calls to the Google backend are never cached.
 // Bump VERSION whenever files in docs/ change, so devices pick up the new version.
-const VERSION = 'v2';
+const VERSION = 'v3';
 const CACHE = `ht-${VERSION}`;
 const SHELL = [
-  './', 'index.html', 'css/styles.css', 'js/app.js', 'js/store.js', 'js/dates.js', 'js/demo.js', 'js/timer.js',
+  './', 'index.html', 'css/styles.css', 'js/app.js', 'js/store.js', 'js/dates.js', 'js/demo.js', 'js/timer.js', 'js/planner.js', 'js/inbox.js',
   'manifest.webmanifest', 'icons/icon-192.png', 'icons/apple-touch-icon.png',
 ];
 
