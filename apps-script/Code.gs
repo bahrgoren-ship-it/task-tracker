@@ -601,6 +601,32 @@ function moodle_(fn, params, token) {
   return j;
 }
 
+/**
+ * Discussions of one forum, newest first. Moodle 5.x rejects a missing/default sort order with
+ * "invalidparameter", so explicit sort orders are tried (1 = last post desc, 3 = created desc …) and the one
+ * that works is remembered. Older Moodle: falls back to the _paginated function.
+ */
+function forumDiscussions_(forumId, perpage) {
+  const props = PropertiesService.getScriptProperties();
+  const known = props.getProperty('MOODLE_FORUM_SORTORDER');
+  const tries = (known !== null ? [known] : []).concat(['1', '3', '0', '']);
+  const errors = [];
+  for (let i = 0; i < tries.length; i++) {
+    const p = { forumid: forumId, page: 0, perpage: perpage };
+    if (tries[i] !== '') p.sortorder = tries[i];
+    try {
+      const res = moodle_('mod_forum_get_forum_discussions', p);
+      if (known !== tries[i]) props.setProperty('MOODLE_FORUM_SORTORDER', tries[i]);
+      return res;
+    } catch (err) { errors.push('sortorder ' + (tries[i] || 'none') + ': ' + err.message); }
+  }
+  try {
+    return moodle_('mod_forum_get_forum_discussions_paginated',
+      { forumid: forumId, sortby: 'timemodified', sortdirection: 'DESC', page: 0, perpage: perpage });
+  } catch (err) { errors.push('paginated: ' + err.message); }
+  throw new Error('forum ' + forumId + ': ' + errors.join(' / '));
+}
+
 function setMoodleToken_(token) {
   if (!token) {
     PropertiesService.getScriptProperties().deleteProperty('MOODLE_TOKEN');
@@ -675,17 +701,7 @@ function moodleCheck_() {
     const forumId = forumOf[c.slug];
     if (!forumId) return;
     try {
-      let res;
-      try {
-        res = moodle_('mod_forum_get_forum_discussions', { forumid: forumId, page: 0, perpage: 40 });
-      } catch (err) {
-        try {
-          res = moodle_('mod_forum_get_forum_discussions_paginated',
-            { forumid: forumId, sortby: 'timemodified', sortdirection: 'DESC', page: 0, perpage: 40 });
-        } catch (err2) {
-          throw new Error('forum ' + forumId + ': ' + err.message + ' / paginated: ' + err2.message);
-        }
-      }
+      const res = forumDiscussions_(forumId, 40);
       (res.discussions || []).forEach(function (d) {
         const did = d.discussion || d.id;
         const ref = 'post:' + did;
@@ -782,12 +798,14 @@ function debugMoodle() {
   } catch (err) { log('forums FAILED', err.message); }
   const news = forums.filter(function (f) { return f.type === 'news'; })[0];
   if (!news) { log('no news forum found', ''); return; }
-  ['mod_forum_get_forum_discussions', 'mod_forum_get_forum_discussions_paginated'].forEach(function (fn) {
-    try {
-      const r = moodle_(fn, fn.indexOf('paginated') > 0
-        ? { forumid: news.id, sortby: 'timemodified', sortdirection: 'DESC', page: 0, perpage: 5 }
-        : { forumid: news.id, page: 0, perpage: 5 });
-      log(fn + ' OK', (r.discussions || []).map(function (d) { return { id: d.id, discussion: d.discussion, subject: d.subject }; }));
-    } catch (err) { log(fn + ' FAILED (forum ' + news.id + ')', err.message); }
-  });
+  try {
+    PropertiesService.getScriptProperties().deleteProperty('MOODLE_FORUM_SORTORDER');
+    const r = forumDiscussions_(news.id, 5);
+    log('discussions OK (sortorder ' + PropertiesService.getScriptProperties().getProperty('MOODLE_FORUM_SORTORDER') + ')',
+      (r.discussions || []).map(function (d) { return { id: d.id, discussion: d.discussion, subject: d.subject, created: d.created }; }));
+  } catch (err) { log('discussions FAILED', err.message); }
+  try {
+    const r = moodleCheck_();
+    log('full check', r);
+  } catch (err) { log('full check FAILED', err.message); }
 }
