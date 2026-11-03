@@ -3,7 +3,7 @@
 
 import { todayIL, addDays, nowStampIL } from './dates.js';
 
-const LS_KEY = 'ht.demo.v3';
+const LS_KEY = 'ht.demo.v4';
 
 const COURSES = [
   ['ds-algs', 'מבני נתונים ואלגוריתמים', 'מבני נתונים', '#3B6FB6'],
@@ -12,6 +12,8 @@ const COURSES = [
   ['algebraic-methods', 'שיטות אלגבריות בהנדסת נתונים', 'שיטות אלגבריות', '#8B5E3C'],
   ['game-theory', 'תורת המשחקים והתנהגות כלכלית', 'תורת המשחקים', '#7B5AA6'],
 ].map(([slug, name_he, short_he, color]) => ({ slug, name_he, short_he, color, active: 'TRUE' }));
+
+const dm = (d) => `${+d.slice(8)}.${+d.slice(5, 7)}`;
 
 function seed() {
   const t = todayIL();
@@ -41,14 +43,33 @@ function seed() {
       { id: 'b_demo02', task_id: 't_demo04', start: `${t} 18:00`, end: `${t} 19:00`, state: 'draft', sync_calendar: '', calendar_event_id: '', note: '', updated_at: now },
     ],
     courses: COURSES,
-    settings: [{ key: 'default_block_minutes', value: '60' }],
+    settings: [{ key: 'default_block_minutes', value: '60' }, { key: 'ai_status', value: 'connected · הדגמה' }],
     moodle_inbox: [
       { id: 'm_demo01', course: 'databases', kind: 'announcement', moodle_ref: 'post:1', posted_at: `${addDays(t, -1)} 21:04`,
-        title: 'עדכונים', author: 'אפק וקנין', text: 'שלום,\nההגשה של תרגיל בית 1 תהיה עד ה-' + `${+addDays(t, 9).slice(8)}.${+addDays(t, 9).slice(5, 7)}` + ' בשעה 23:59.\nבהצלחה!',
-        detected_dates: addDays(t, 9), url: 'https://moodle26.technion.ac.il', status: 'new', task_id: '' },
-      { id: 'm_demo02', course: 'statistics-1', kind: 'assignment', moodle_ref: 'assign:1', posted_at: `${t} 08:00`,
+        title: 'עדכונים', author: 'אפק וקנין',
+        text: `שלום לכולם,\n\nתרגיל בית 1 פורסם באתר הקורס. ההגשה בזוגות, עד ה-${dm(addDays(t, 9))} בשעה 23:59, דרך המודל בלבד.\nמי שעדיין לא מצא/ה זוג — יש פורום חיפוש שותפים.\n\nבנוסף, לפני התרגול הבא יש להתקין את SQL Server Management Studio לפי ההנחיות שבאתר.\n\nבהצלחה!\nאפק`,
+        detected_dates: addDays(t, 9), url: 'https://moodle26.technion.ac.il', status: 'new', task_id: '',
+        ai_status: 'done', ai_summary: 'תרגיל בית 1 פורסם (הגשה בזוגות), ויש להתקין SSMS לפני התרגול הבא.', ai_checked_at: now,
+        ai_suggestions: JSON.stringify([
+          { id: 'n0', type: 'new', state: 'open', title: 'תרגיל בית 1', course: 'databases', due_date: addDays(t, 9), due_time: '23:59', estimate_hours: 6, notes: 'הגשה בזוגות דרך המודל בלבד.', reason: '„תרגיל בית 1 פורסם באתר הקורס. ההגשה בזוגות…”' },
+          { id: 'n1', type: 'new', state: 'open', title: 'להתקין SQL Server Management Studio', course: 'databases', due_date: addDays(t, 2), due_time: '', estimate_hours: 0.5, notes: 'לפי ההנחיות שבאתר הקורס, לפני התרגול הבא.', reason: '„לפני התרגול הבא יש להתקין…”' },
+          { id: 'c2', type: 'covered', state: 'info', task_id: 't_demo01', title: 'למצוא זוג', reason: 'מציאת זוג לתרגילי הבית' },
+        ]) },
+      { id: 'm_demo02', course: 'algebraic-methods', kind: 'announcement', moodle_ref: 'post:2', posted_at: `${t} 09:12`,
+        title: 'הארכה בתרגיל בית 2', author: 'צוות הקורס',
+        text: `בעקבות בקשות רבות, ההגשה של תרגיל בית 2 נדחית ל-${dm(addDays(t, 15))} בשעה 12:00.\nשאלה 4 לא חובה.`,
+        detected_dates: addDays(t, 15), url: 'https://moodle26.technion.ac.il', status: 'new', task_id: '',
+        ai_status: 'done', ai_summary: 'ההגשה של תרגיל בית 2 נדחתה, ושאלה 4 אינה חובה.', ai_checked_at: now,
+        ai_suggestions: JSON.stringify([
+          { id: 'u0', type: 'update', state: 'open', task_id: 't_demo05', title: 'תרגיל בית 2', old_due: addDays(t, 12), due_date: addDays(t, 15), due_time: '12:00', notes_to_add: 'שאלה 4 לא חובה.', reason: '„ההגשה של תרגיל בית 2 נדחית…”' },
+        ]) },
+      { id: 'm_demo03', course: 'ds-algs', kind: 'announcement', moodle_ref: 'post:3', posted_at: `${addDays(t, -2)} 13:40`,
+        title: 'ביטול התרגול מחר', author: 'יהושע רוס', text: 'התרגול של מחר בשעה 10:30 מבוטל. החומר יועבר בתרגול הבא.',
+        detected_dates: '', url: 'https://moodle26.technion.ac.il', status: 'new', task_id: '',
+        ai_status: 'done', ai_summary: 'התרגול של מחר מבוטל; החומר יועבר בתרגול הבא.', ai_checked_at: now, ai_suggestions: '[]' },
+      { id: 'm_demo04', course: 'statistics-1', kind: 'assignment', moodle_ref: 'assign:1', posted_at: `${t} 08:00`,
         title: 'תרגיל בית 2', author: '', text: 'הגשה ביחידים, קובץ PDF אחד.', detected_dates: `${addDays(t, 6)} 23:59`,
-        url: 'https://moodle26.technion.ac.il', status: 'new', task_id: '' },
+        url: 'https://moodle26.technion.ac.il', status: 'new', task_id: '', ai_status: '', ai_summary: '', ai_suggestions: '', ai_checked_at: '' },
     ],
   };
 }
@@ -73,12 +94,27 @@ export class DemoBackend {
 
   async handle(p) {
     await new Promise((r) => setTimeout(r, 150));
-    if (p.action === 'ping') return { api_version: 3, now: nowStampIL(), demo: true };
-    if (p.action === 'bootstrap') return { ...structuredClone(this.db), api_version: 3 };
+    if (p.action === 'ping') return { api_version: 4, now: nowStampIL(), demo: true };
+    if (p.action === 'bootstrap') return { ...structuredClone(this.db), api_version: 4 };
     if (p.action === 'busy') return demoBusy(p.from, p.to);
     if (p.action === 'syncNow') return { calendar: { pulled: 0, pushed: 0 } };
     if (p.action === 'moodleCheck') return { status: 'ok · 0 new (הדגמה)', added: 0 };
     if (p.action === 'setMoodleToken') return { connected: true, fullname: 'הדגמה' };
+    if (p.action === 'setGeminiKey') return { connected: true, model: 'הדגמה' };
+    if (p.action === 'aiReview') { // fake review: one suggested task per waiting message
+      let reviewed = 0;
+      for (const m of this.db.moodle_inbox) {
+        if (p.id ? m.id !== p.id : (m.status !== 'new' || m.kind === 'date_change' || m.ai_status)) continue;
+        if (p.id && m.ai_status === 'done') { reviewed++; continue; }
+        const due = (m.detected_dates || '').split(',')[0].trim();
+        Object.assign(m, { ai_status: 'done', ai_summary: `(הדגמה) ${m.title}`, ai_checked_at: nowStampIL(),
+          ai_suggestions: JSON.stringify([{ id: 'n0', type: 'new', state: 'open', title: m.title, course: m.course,
+            due_date: due.slice(0, 10), due_time: due.slice(11, 16), estimate_hours: 3, notes: m.text.slice(0, 120), reason: 'הדגמה' }]) });
+        reviewed++;
+      }
+      this.save();
+      return { status: `ok · ${reviewed} reviewed`, reviewed };
+    }
     if (p.action === 'batch') {
       for (const o of p.ops) {
         const k = o.table === 'settings' ? 'key' : 'id';

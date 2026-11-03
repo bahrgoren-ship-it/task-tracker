@@ -3,6 +3,8 @@
 // - Drag a task from the tray onto the grid → a 1-hour draft block (length = settings.default_block_minutes).
 //   On touch screens: press-and-hold, then drag. Or tap a task, then tap a time slot.
 // - Drag a block to move it, drag its bottom edge to resize it, tap it to edit.
+// - Take a block back off: drag it back onto the task list, use its ✕, or "הסר מהלוח" in its sheet.
+//   Every placement / move / resize / removal can be undone from the toast ("בטל").
 // - Drafts are "thinking" — "אשר תכנון" turns the visible drafts into planned blocks (which the backend can
 //   sync to Google Calendar). The user's own calendar events are shown in grey as busy time.
 import { store } from './store.js';
@@ -105,7 +107,7 @@ function trayHtml() {
   const tasks = store.data.tasks.filter(isOpen)
     .sort((a, b) => `${a.due_date || '9999'}${a.due_time}`.localeCompare(`${b.due_date || '9999'}${b.due_time}`));
   if (!tasks.length) return '<p class="hint small">אין משימות פתוחות.</p>';
-  return `<p class="tray-hint">${window.matchMedia('(pointer: coarse)').matches ? 'החזק וגרור משימה ללוח, או הקש עליה ואז על שעה' : 'גרור משימה ללוח, או לחץ עליה ואז על שעה'}</p>
+  return `<p class="tray-hint">${window.matchMedia('(pointer: coarse)').matches ? 'החזק וגרור משימה ללוח, או הקש עליה ואז על שעה' : 'גרור משימה ללוח, או לחץ עליה ואז על שעה'}. כדי להחזיר בלוק — גרור אותו לכאן או הקש על ✕.</p>
     <ul>${tasks.map((t) => {
       const c = store.course(t.course);
       const planned = store.plannedMinutes(t.id), spent = store.spentMinutes(t.id), est = Math.round((Number(t.estimate_hours) || 0) * 60);
@@ -177,6 +179,7 @@ function blockHtml({ b, s, e, col, cols }) {
       style="--c:${esc(c ? c.color : '#8A8F98')};top:${topOf(a)}px;height:${h}px;inset-inline-start:calc(${(100 / cols) * col}% + 1px);width:calc(${100 / cols}% - 3px)">
     <div class="blk-t">${b.state === 'done' ? '✓ ' : ''}${esc(t ? t.title : '(משימה נמחקה)')}</div>
     ${h > 30 ? `<div class="blk-m"><bdi dir="ltr">${b.start.slice(11, 16)}–${b.end.slice(11, 16)}</bdi>${synced ? ' · 📅' : ''}${b.state === 'draft' ? ' · טיוטה' : ''}</div>` : ''}
+    <button type="button" class="blk-x" data-unplace aria-label="הסר מהלוח" title="הסר מהלוח">✕</button>
     <div class="blk-resize" data-resize></div>
   </div>`;
 }
@@ -226,6 +229,8 @@ function onClick(e) {
   if (ed) return ui.openEditor(ed.dataset.edit);
   const tt = e.target.closest('[data-task]');
   if (tt) { selectedTask = selectedTask === tt.dataset.task ? null : tt.dataset.task; return render(true); }
+  const unplace = e.target.closest('[data-unplace]');
+  if (unplace) return removeBlock(unplace.closest('[data-block]').dataset.block);
   const blk = e.target.closest('[data-block]');
   if (blk) return openBlockSheet(blk.dataset.block);
   const day = e.target.closest('.pl-day');
@@ -247,8 +252,27 @@ function defaultLen() { return Math.max(15, Number(store.setting('default_block_
 function createBlock(taskId, day, startMin, len = defaultLen()) {
   const endMin = Math.min(END_H * 60, startMin + len);
   const end = endMin >= 24 * 60 ? `${addDays(day, 1)} 00:00` : `${day} ${toHHMM(endMin)}`;
-  store.saveBlock({ task_id: taskId, start: `${day} ${toHHMM(startMin)}`, end, state: 'draft' });
-  ui.toast(`נוסף בלוק טיוטה · ${toHHMM(startMin)}`);
+  const id = store.saveBlock({ task_id: taskId, start: `${day} ${toHHMM(startMin)}`, end, state: 'draft' });
+  ui.toast(`נוסף בלוק טיוטה · ${toHHMM(startMin)}`, { label: 'בטל', fn: () => store.deleteBlock(id) });
+}
+
+/** Takes a block off the planner (back to the task list), with undo. */
+function removeBlock(id) {
+  const b = store.block(id);
+  if (!b) return;
+  const copy = { ...b, calendar_event_id: '' }; // its calendar event is deleted with it; undo makes a fresh one
+  store.deleteBlock(id);
+  const t = store.task(b.task_id);
+  ui.toast(`הבלוק הוסר${t ? ` · „${t.title}”` : ''}`, { label: 'בטל', fn: () => store.saveBlock(copy) });
+}
+
+function moveBlock(id, start, end) {
+  const b = store.block(id);
+  if (!b) return;
+  const before = { id, start: b.start, end: b.end };
+  if (before.start === start && before.end === end) return;
+  store.saveBlock({ id, start, end });
+  ui.toast(`הבלוק הוזז · ${start.slice(11, 16)}–${end.slice(11, 16)}`, { label: 'בטל', fn: () => store.saveBlock(before) });
 }
 
 function confirmPlan() {
@@ -256,13 +280,14 @@ function confirmPlan() {
   const drafts = store.data.blocks.filter((b) => b.state === 'draft' && days.includes(b.start.slice(0, 10)));
   drafts.forEach((b) => store.saveBlock({ id: b.id, state: 'planned' }));
   const synced = store.setting('sync_blocks_to_calendar') === 'TRUE';
-  ui.toast(`${drafts.length} בלוקים אושרו${synced ? ' ויופיעו ביומן Google' : ''}`);
+  ui.toast(`${drafts.length} בלוקים אושרו${synced ? ' ויופיעו ביומן Google' : ''}`,
+    { label: 'בטל', fn: () => drafts.forEach((b) => store.saveBlock({ id: b.id, state: 'draft' })) });
 }
 
 /* ------------------------------------------------------------ drag & drop ---- */
 
 function onPointerDown(e) {
-  if (e.button > 0) return;
+  if (e.button > 0 || e.target.closest('[data-unplace]')) return;
   const resize = e.target.closest('[data-resize]');
   const blk = e.target.closest('[data-block]');
   const task = e.target.closest('[data-task]');
@@ -303,6 +328,7 @@ function startDrag() {
     drag.grab = drag.kind === 'move' ? toMinAt(b.start) - pointerMinute(b.start.slice(0, 10)) : 0;
     drag.y = y;
     drag.el.classList.add('lifted');
+    if (drag.kind === 'move') root.querySelector('.pl-tray')?.classList.add('drop-zone');
   } else drag.len = defaultLen();
   drag.ghost = document.createElement('div');
   drag.ghost.className = 'pl-ghost';
@@ -336,6 +362,13 @@ function updateDrag() {
   const g = grid.getBoundingClientRect();
   const sc = root.querySelector('.pl-scroll').getBoundingClientRect();
   const overGrid = drag.x >= g.left && drag.x <= g.right && drag.y >= sc.top && drag.y <= sc.bottom;
+  const tray = root.querySelector('.pl-tray');
+  if (drag.kind === 'move' && tray) {
+    const tr = tray.getBoundingClientRect();
+    const overTray = drag.x >= tr.left && drag.x <= tr.right && drag.y >= tr.top && drag.y <= tr.bottom;
+    tray.classList.toggle('drop-over', overTray);
+    if (overTray) { drag.target = { remove: true }; drag.ghost.style.display = 'none'; return; }
+  }
   let col = drag.kind === 'resize' ? root.querySelector(`.pl-day[data-day="${store.block(drag.id).start.slice(0, 10)}"]`) : dayUnderPointer();
   if (!overGrid && drag.kind !== 'resize') col = null;
   drag.target = null;
@@ -383,10 +416,11 @@ function onPointerUp(e) {
   if (!d.active) { drag = null; return; } // a plain tap → click handler
   const tgt = d.target;
   finish();
-  if (tgt) {
+  if (tgt && tgt.remove) removeBlock(d.id);
+  else if (tgt) {
     const end = tgt.e >= 24 * 60 ? `${addDays(tgt.day, 1)} 00:00` : `${tgt.day} ${toHHMM(tgt.e)}`;
     if (d.kind === 'task') createBlock(d.id, tgt.day, tgt.s, tgt.e - tgt.s);
-    else store.saveBlock({ id: d.id, start: `${tgt.day} ${toHHMM(tgt.s)}`, end });
+    else moveBlock(d.id, `${tgt.day} ${toHHMM(tgt.s)}`, end);
   }
   drag = { justDropped: true };
   setTimeout(() => { if (drag && drag.justDropped) drag = null; }, 400);
@@ -404,6 +438,7 @@ function cancel() {
 }
 function finish() {
   root.classList.remove('dragging');
+  root.querySelector('.pl-tray')?.classList.remove('drop-zone', 'drop-over');
   drag.ghost?.remove();
   drag.el?.classList.remove('lifted');
   drag.active = false;
@@ -458,7 +493,7 @@ function openBlockSheet(id) {
       <label class="field"><span>מה לעשות בבלוק (לא חובה)</span><input name="note" value="${esc(b.note)}"></label>
     </div>
     <footer class="sheet-foot">
-      <button type="button" class="btn danger ghost" data-del>מחיקה</button>
+      <button type="button" class="btn danger ghost" data-del>הסר מהלוח</button>
       <div class="foot-actions">
         ${t && isOpen(t) ? '<button type="button" class="btn ghost" data-timer>▶ טיימר</button>' : ''}
         <button type="submit" class="btn primary">שמירה</button>
@@ -466,7 +501,7 @@ function openBlockSheet(id) {
     </footer></form>`;
   const f = dlg.querySelector('form');
   dlg.querySelector('[data-close]').onclick = () => dlg.close();
-  dlg.querySelector('[data-del]').onclick = () => { store.deleteBlock(id); dlg.close(); ui.toast('הבלוק נמחק'); };
+  dlg.querySelector('[data-del]').onclick = () => { dlg.close(); removeBlock(id); };
   const tm = dlg.querySelector('[data-timer]');
   if (tm) tm.onclick = () => { dlg.close(); ui.openTimer(b.task_id); };
   f.onsubmit = () => {
@@ -476,7 +511,9 @@ function openBlockSheet(id) {
     const end = to === '00:00' ? `${addDays(day, 1)} 00:00` : `${day} ${to}`;
     const patch = { id, start: `${day} ${from}`, end, state: f.state.value, note: f.note.value.trim() };
     if (f.sync) patch.sync_calendar = f.sync.checked ? '' : 'FALSE';
+    const before = { id, start: b.start, end: b.end, state: b.state, note: b.note, sync_calendar: b.sync_calendar };
     store.saveBlock(patch);
+    if (patch.state === 'skipped' && b.state !== 'skipped') ui.toast('סומן „דילגתי” — הבלוק הוסתר מהלוח', { label: 'בטל', fn: () => store.saveBlock(before) });
     if (patch.state === 'done' && t && b.state !== 'done') ui.toast('כל הכבוד! (הזמן עצמו נרשם מהטיימר או ידנית במשימה)');
   };
   dlg.showModal();

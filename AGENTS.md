@@ -12,10 +12,10 @@ Bahr's task tracker (homework first; may grow to all tasks): a Hebrew (RTL) inst
 | `docs/js/dates.js` | Date helpers (everything in Israel time, strings `yyyy-mm-dd` / `HH:MM`). |
 | `docs/js/timer.js` | Stopwatch / pomodoro. State lives in the Sheet (`settings.active_timer`) so devices share it; focus time is saved to `sessions`. |
 | `docs/js/planner.js` | Planner: custom RTL week grid, drag tasks from the tray into work blocks (`blocks`), move/resize, tap-to-place, "אשר תכנון", busy layer from Google Calendar. No external libraries. |
-| `docs/js/inbox.js` | "הודעות" screen: `moodle_inbox` items → create task / update date / ignore. |
+| `docs/js/inbox.js` | "הודעות" screen: full Moodle messages + the AI's suggestions (add task / update task / not needed). A message is never a task by itself. |
 | `docs/js/demo.js` | In-browser fake backend ("demo mode"). Keep its API identical to the real one. |
 | `docs/sw.js` | Service worker (offline). **Bump `VERSION` whenever anything in `docs/` changes.** |
-| `apps-script/Code.gs` | Backend: Google Apps Script bound to the Sheet. JSON API (`ping`, `bootstrap`, `batch`, `busy`, `syncNow`, `moodleCheck`, `setMoodleToken`), schema migration, Google Calendar sync, Moodle check, 10-minute trigger. |
+| `apps-script/Code.gs` | Backend: Google Apps Script bound to the Sheet. JSON API (`ping`, `bootstrap`, `batch`, `busy`, `syncNow`, `moodleCheck`, `setMoodleToken`, `setGeminiKey`, `aiReview`), schema migration, Google Calendar sync, Moodle check, AI review of Moodle messages (Gemini), 10-minute trigger. |
 | `SETUP.md` | How Bahr installs/updates the backend and connects devices. |
 
 ## Rules
@@ -23,7 +23,8 @@ Bahr's task tracker (homework first; may grow to all tasks): a Hebrew (RTL) inst
 - Column names in the Sheet are fixed English ids. To change columns: edit `SCHEMA` in `Code.gs` (+ `DROPPED`
   for removed ones, `DEFAULT_SETTINGS` for new settings), bump `SCHEMA_VERSION`, update `SCHEMA.md` and `demo.js`.
   The backend migrates the Sheet by itself.
-- Never put the API key, the Web-app URL or the Moodle token in the repo (the repo is public).
+- Never put the API key, the Web-app URL, the Moodle token or the Gemini key in the repo (the repo is public).
+- Technion's Moodle (5.2) rejects `mod_forum_get_forum_discussions` with `perpage` > 10 — page through 10 at a time.
 - Changing `Code.gs` only takes effect after Bahr pastes it into the Apps Script editor and creates a new
   deployment version (see SETUP.md) — tell him when that's needed.
 - Test UI changes in demo mode (settings → "נסה במצב הדגמה") on phone, iPad and desktop widths.
@@ -31,5 +32,5 @@ Bahr's task tracker (homework first; may grow to all tasks): a Hebrew (RTL) inst
 ## Roadmap
 1. ✅ Sheet + Notion import. 2. ✅ Tasks screen + time tracking (estimate, total, stopwatch/pomodoro).
 3. ✅ Planner + Google Calendar sync (deadlines one-way, work blocks two-way). 4. ✅ Moodle inbox (announcements +
-assignments, every 15 min); ⏳ Windows Task Scheduler for the file sync (moodle-dl) on Bahr's PC. 5. AI procedures.
+assignments, every 15 min) + AI review (Gemini suggests tasks not already covered); ⏳ Windows Task Scheduler for the file sync (moodle-dl) on Bahr's PC. 5. AI procedures.
 Tests (Playwright + fake Apps Script services) are not in the repo; keep behaviour covered when changing things.

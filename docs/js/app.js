@@ -434,6 +434,15 @@ function openSettings() {
         </div>
         <p class="hint small">ה-token נשמר רק בשרת שלך (Script Properties), לא בגיליון ולא באפליקציה.</p>
         <hr>
+        <h3 class="sub-h">AI להודעות ממודל</h3>
+        <p class="hint small">Gemini קורא כל הודעה ממודל ומציע משימה רק כשיש בה משהו לעשות שעוד לא קיים במשימות שלך.</p>
+        <p class="hint small">מצב: <span dir="auto">${esc(store.setting('ai_status') || 'לא מחובר')}</span></p>
+        <div class="row wrap">
+          <label class="field grow"><span>מפתח Gemini API</span><input name="gemini_key" dir="ltr" autocomplete="off" placeholder="AIza…"></label>
+          <button type="button" class="btn ghost" data-gemini>חבר</button>
+        </div>
+        <p class="hint small">מפתח בחינם: <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a> → Create API key. נשמר רק בשרת שלך (Script Properties). המודל נבחר אוטומטית (Gemini Flash העדכני); אפשר לקבוע אחר בגיליון: settings → ai_model.</p>
+        <hr>
         <h3 class="sub-h">פומודורו</h3>
         <div class="row wrap pomo">
           <label class="field"><span>ריכוז (דק׳)</span><input type="number" min="1" data-set="pomodoro_focus_minutes" value="${esc(timer.settingsP().focus)}"></label>
@@ -495,6 +504,21 @@ function openSettings() {
       toast(c.added ? `נמצאו ${c.added} הודעות/מטלות במודל` : 'מודל מחובר, אין חדש');
       store.refresh();
     } catch (err) { toast(`לא הצלחתי להתחבר למודל: ${err.message}`); }
+  });
+  $('[data-gemini]', dlg)?.addEventListener('click', async () => {
+    const key = form.gemini_key.value.trim();
+    if (!key) { form.gemini_key.focus(); return; }
+    if (store.apiVersion < 4) { toast('צריך לעדכן את השרת קודם (SETUP.md)'); return; }
+    toast('בודק את המפתח…');
+    try {
+      const r = await store.action('setGeminiKey', { key_value: key });
+      form.gemini_key.value = '';
+      toast(`ה-AI מחובר (${r.model}) — עובר על ההודעות…`);
+      await store.refresh();
+      const a = await store.action('aiReview');
+      toast(a.reviewed ? `ה-AI עבר על ${a.reviewed} הודעות` : `AI: ${a.status}`);
+      store.refresh();
+    } catch (err) { toast(`המפתח לא עבד: ${err.message}`); }
   });
   $('[data-logout]', dlg)?.addEventListener('click', () => {
     if (store.queue.length && !confirm('יש שינויים שעוד לא נשלחו. לנתק בכל זאת?')) return;

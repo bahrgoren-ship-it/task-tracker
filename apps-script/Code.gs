@@ -4,7 +4,8 @@
  * What it does: a small JSON API over the Sheet, used by the app (docs/ folder of this repo).
  * Every request must carry the secret key stored in Script Properties (API_KEY).
  * Also: optional Google Calendar sync (deadlines + two-way work blocks) and a Moodle check (announcements +
- * assignments → moodle_inbox), run every 10 minutes by a trigger that setup() installs.
+ * assignments → moodle_inbox), run every 10 minutes by a trigger that setup() installs, and an AI review
+ * (Gemini) of every new Moodle message that suggests tasks only when no existing task already covers them.
  *
  * Setup (once): run setup() from the Apps Script editor, copy the key from the log,
  * then Deploy → New deployment → Web app (Execute as: Me, Who has access: Anyone).
@@ -15,8 +16,8 @@
 
 const SHEET_ID = '10qLYln2zUiMo7dEI3xZ8pj4ncGX7TRmATZNuZfvUfWM';
 const TZ = 'Asia/Jerusalem';
-const API_VERSION = 3;
-const SCHEMA_VERSION = 3; // bump when SCHEMA changes; the Sheet is migrated automatically
+const API_VERSION = 4;
+const SCHEMA_VERSION = 4; // bump when SCHEMA changes; the Sheet is migrated automatically
 
 // Column order of each tab. Must match row 1 of the Sheet (see SCHEMA.md).
 const SCHEMA = {
@@ -27,7 +28,7 @@ const SCHEMA = {
   courses: ['slug', 'name_he', 'short_he', 'number', 'moodle_course_id', 'moodle_news_forum_id', 'color',
     'active', 'moodle_folder'],
   moodle_inbox: ['id', 'course', 'kind', 'moodle_ref', 'posted_at', 'title', 'author', 'text', 'detected_dates',
-    'url', 'status', 'task_id'],
+    'url', 'status', 'task_id', 'ai_status', 'ai_summary', 'ai_suggestions', 'ai_checked_at'],
   settings: ['key', 'value', 'meaning'],
 };
 const KEY_COLUMN = { tasks: 'id', sessions: 'id', blocks: 'id', courses: 'slug', moodle_inbox: 'id', settings: 'key' };
@@ -53,6 +54,8 @@ const DEFAULT_SETTINGS = [
   ['calendar_last_sync', '', 'App-managed: last calendar sync.'],
   ['moodle_last_check', '', 'App-managed: last time Moodle was checked.'],
   ['moodle_status', '', "App-managed: result of the last Moodle check ('ok …' or the error)."],
+  ['ai_model', '', "Gemini model for the AI review of Moodle messages. Empty = the newest Gemini Flash model (chosen automatically)."],
+  ['ai_status', '', 'App-managed: AI review — connection / result of the last run.'],
   ['schema_version', String(SCHEMA_VERSION), 'Bumped when columns change (see SCHEMA.md).'],
 ];
 // Tables the app may write to, and which may have rows deleted.
@@ -61,7 +64,7 @@ const DELETABLE = ['tasks', 'sessions', 'blocks'];
 // How Date cells (if someone typed a real date into the Sheet) are turned back into text.
 const DATE_FORMAT = { due_date: 'yyyy-MM-dd', due_time: 'HH:mm', posted_at: 'yyyy-MM-dd HH:mm',
   start: 'yyyy-MM-dd HH:mm', end: 'yyyy-MM-dd HH:mm', created_at: 'yyyy-MM-dd HH:mm',
-  updated_at: 'yyyy-MM-dd HH:mm' };
+  updated_at: 'yyyy-MM-dd HH:mm', ai_checked_at: 'yyyy-MM-dd HH:mm' };
 
 /* ------------------------------------------------------------------ setup ---- */
 
@@ -121,6 +124,10 @@ function handle_(req) {
         return json_({ ok: true, data: setMoodleToken_(String(req.token || '').trim()) });
       case 'moodleCheck':
         return json_({ ok: true, data: withLock_(moodleCheck_) });
+      case 'setGeminiKey':
+        return json_({ ok: true, data: setGeminiKey_(String(req.key_value || '').trim()) });
+      case 'aiReview': // {id} = review that message again; no id = review all messages still waiting
+        return json_({ ok: true, data: aiReview_({ id: req.id ? String(req.id) : '' }) });
       default:
         return json_({ ok: false, error: 'unknown action: ' + req.action });
     }
@@ -588,6 +595,7 @@ function busy_(from, to) {
 // New items go to the moodle_inbox tab; nothing becomes a task until Bahr accepts it in the app.
 
 const MOODLE_SITE = 'https://moodle26.technion.ac.il';
+const MAX_TEXT = 40000; // full message text (a Sheet cell holds up to 50,000 characters)
 
 function moodle_(fn, params, token) {
   token = token || PropertiesService.getScriptProperties().getProperty('MOODLE_TOKEN');
@@ -779,7 +787,7 @@ function moodleCheck_() {
           if (taskByRef[p.ref]) return;
           add({
             course: c.slug, kind: 'announcement', moodle_ref: p.ref, posted_at: p.posted, title: p.title,
-            author: p.author, text: p.text.slice(0, 3000),
+            author: p.author, text: p.text.slice(0, MAX_TEXT),
             detected_dates: detectDates_(p.title + '\n' + p.text, toDate_(p.posted.slice(0, 10))).join(', '), url: p.url,
           });
         });
@@ -794,7 +802,7 @@ function moodleCheck_() {
         const text = plain_(d.message);
         add({
           course: c.slug, kind: 'announcement', moodle_ref: ref, posted_at: fmt_(posted),
-          title: d.subject || d.name || '', author: d.userfullname || '', text: text.slice(0, 3000),
+          title: d.subject || d.name || '', author: d.userfullname || '', text: text.slice(0, MAX_TEXT),
           detected_dates: detectDates_((d.subject || '') + '\n' + text, posted).join(', '),
           url: MOODLE_SITE + '/mod/forum/discuss.php?d=' + did,
         });
@@ -825,7 +833,7 @@ function moodleCheck_() {
         } else {
           add({
             course: c ? c.slug : '', kind: 'assignment', moodle_ref: ref, posted_at: now_(), title: a.name, author: '',
-            text: plain_(a.intro).slice(0, 1500), detected_dates: due,
+            text: plain_(a.intro).slice(0, MAX_TEXT), detected_dates: due,
             url: MOODLE_SITE + '/mod/assign/view.php?id=' + a.cmid,
           });
         }
@@ -838,6 +846,272 @@ function moodleCheck_() {
   setSetting_('moodle_last_check', now_());
   setSetting_('moodle_status', status);
   return { status: status, added: added };
+}
+
+/* ------------------------------------------------------------- AI review ---- */
+// Every Moodle message (announcement / assignment) is read in full by Gemini, which suggests tasks for the things
+// Bahr actually has to do — but only when no existing task (or a suggestion from another message) already covers
+// them; if a message changes an existing task (e.g. a new deadline) it suggests an update instead. The message
+// itself is never a task. Suggestions are stored as JSON in moodle_inbox.ai_suggestions; nothing becomes a task
+// until Bahr accepts it in the app. The Gemini API key lives in Script Properties (GEMINI_KEY) only.
+
+const GEMINI_API = 'https://generativelanguage.googleapis.com/v1beta/';
+const AI_MAX_PER_RUN = 6;
+
+function gemini_(path, body, key) {
+  key = key || PropertiesService.getScriptProperties().getProperty('GEMINI_KEY');
+  if (!key) throw new Error('no Gemini key');
+  const opts = { method: body ? 'post' : 'get', muteHttpExceptions: true, headers: { 'x-goog-api-key': key } };
+  if (body) { opts.contentType = 'application/json'; opts.payload = JSON.stringify(body); }
+  const res = UrlFetchApp.fetch(GEMINI_API + path, opts);
+  const code = res.getResponseCode();
+  let j = {};
+  try { j = JSON.parse(res.getContentText()); } catch (err) { j = {}; }
+  if (code !== 200) {
+    const e = new Error('Gemini ' + code + ': ' + ((j.error && j.error.message) || res.getContentText().slice(0, 200)));
+    e.code = code;
+    throw e;
+  }
+  return j;
+}
+
+/** The model to use: settings.ai_model, or the newest "gemini-<version>-flash" the key can use (cached a week). */
+function geminiModel_(key, refresh) {
+  const chosen = getSetting_('ai_model');
+  if (chosen) return chosen.replace(/^models\//, '');
+  const props = PropertiesService.getScriptProperties();
+  const cached = props.getProperty('GEMINI_MODEL');
+  const at = Number(props.getProperty('GEMINI_MODEL_AT') || 0);
+  if (cached && !refresh && Date.now() - at < 7 * 86400000) return cached;
+  const list = gemini_('models?pageSize=1000', null, key).models || [];
+  let best = null, bestV = null;
+  list.forEach(function (m) {
+    if ((m.supportedGenerationMethods || []).indexOf('generateContent') < 0) return;
+    const r = /^models\/gemini-(\d+(?:\.\d+)*)-flash$/.exec(m.name || '');
+    if (!r) return;
+    const v = r[1].split('.').map(Number);
+    if (!bestV || compareVersions_(v, bestV) > 0) { best = m.name.slice(7); bestV = v; }
+  });
+  if (!best) best = list.some(function (m) { return m.name === 'models/gemini-flash-latest'; }) ? 'gemini-flash-latest' : '';
+  if (!best) throw new Error('no Gemini Flash model available for this key');
+  props.setProperty('GEMINI_MODEL', best);
+  props.setProperty('GEMINI_MODEL_AT', String(Date.now()));
+  return best;
+}
+function compareVersions_(a, b) {
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const d = (a[i] || 0) - (b[i] || 0);
+    if (d) return d;
+  }
+  return 0;
+}
+
+function setGeminiKey_(key) {
+  const props = PropertiesService.getScriptProperties();
+  if (!key) {
+    props.deleteProperty('GEMINI_KEY');
+    setSetting_('ai_status', 'not connected');
+    return { connected: false };
+  }
+  const model = geminiModel_(key, true); // throws if the key is wrong
+  props.setProperty('GEMINI_KEY', key);
+  setSetting_('ai_status', 'connected · ' + model);
+  return { connected: true, model: model };
+}
+
+const AI_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    summary: { type: 'STRING', description: 'What the message says, 1-2 short sentences in Hebrew.' },
+    new_tasks: {
+      type: 'ARRAY',
+      items: {
+        type: 'OBJECT',
+        properties: {
+          title: { type: 'STRING' }, due_date: { type: 'STRING' }, due_time: { type: 'STRING' },
+          estimate_hours: { type: 'NUMBER' }, notes: { type: 'STRING' }, reason: { type: 'STRING' },
+        },
+        required: ['title', 'due_date', 'due_time', 'notes', 'reason'],
+      },
+    },
+    updates: {
+      type: 'ARRAY',
+      items: {
+        type: 'OBJECT',
+        properties: {
+          task_id: { type: 'STRING' }, due_date: { type: 'STRING' }, due_time: { type: 'STRING' },
+          notes_to_add: { type: 'STRING' }, reason: { type: 'STRING' },
+        },
+        required: ['task_id', 'due_date', 'due_time', 'notes_to_add', 'reason'],
+      },
+    },
+    covered: {
+      type: 'ARRAY',
+      items: {
+        type: 'OBJECT',
+        properties: { task_id: { type: 'STRING' }, what: { type: 'STRING' } },
+        required: ['task_id', 'what'],
+      },
+    },
+  },
+  required: ['summary', 'new_tasks', 'updates', 'covered'],
+};
+
+function aiPrompt_(m, course, tasks, pending) {
+  const kindHe = { announcement: 'הודעה בלוח ההודעות של הקורס', assignment: 'מטלה שפורסמה במודל עם תאריך הגשה' }[m.kind] || m.kind;
+  const taskLines = tasks.map(function (t) {
+    return '- id=' + t.id + ' | ' + t.title + ' | course=' + (t.course || '-') + ' | status=' + t.status +
+      ' | due=' + (t.due_date ? t.due_date + (t.due_time ? ' ' + t.due_time : '') : '-') +
+      (t.notes ? ' | notes=' + String(t.notes).replace(/\s+/g, ' ').slice(0, 160) : '');
+  }).join('\n') || '(none)';
+  const pendingLines = pending.map(function (p) { return '- ' + p; }).join('\n') || '(none)';
+  return [
+    'You help Bahr, a Technion student, keep his task list complete. You read one message from his course website',
+    '(Moodle) and decide whether it requires him to DO something that is not already in his task list.',
+    '',
+    'Rules:',
+    '1. The message itself is NOT a task. Most messages (greetings, general info, a cancelled class, office-hour',
+    '   changes, reminders of things already listed) need no new task. Return an empty new_tasks list in that case.',
+    '2. Suggest a new task only for a concrete action Bahr must take: submit/hand in something, register or sign up,',
+    '   fill a form, prepare something specific before a given class, watch/read specific required material,',
+    '   install/set up something required, an exam or quiz to prepare for, etc. One task per separate action.',
+    '3. NEVER suggest something an existing task already covers, even if worded differently (compare meaning, course',
+    '   and dates; "HW1", "תרגיל בית 1", "גיליון 1" can be the same thing). Done/cancelled tasks also count as covered.',
+    '   List each such match in "covered" with the task id. Also don\'t repeat anything in "already suggested".',
+    '4. If the message changes something about an existing task (new/extended deadline, new time, extra',
+    '   requirement), put it in "updates" with that task id instead of a new task. Leave due_date/due_time "" when',
+    '   unchanged; notes_to_add = the new requirement in one short Hebrew line, or "".',
+    '5. Titles: short Hebrew, like Bahr writes them (e.g. "תרגיל בית 2", "הרשמה לבוחן", "לצפות בהרצאה 3"), without the',
+    '   course name. notes: the practical details from the message (what exactly, format, where to submit), Hebrew,',
+    '   max 3 short lines. reason: one short Hebrew sentence quoting/pointing to the part of the message.',
+    '6. Dates: due_date as yyyy-mm-dd, due_time as HH:MM (24h) or "" if no time. Resolve dates relative to the',
+    '   message date; Israeli format is day.month (15.11 = 15 November). "" if the message gives no date.',
+    '   estimate_hours: your rough guess of the work in hours, or 0 if you can\'t tell.',
+    '7. summary: what the message says, 1-2 short Hebrew sentences.',
+    '',
+    'Today: ' + fmt_(new Date(), 'yyyy-MM-dd (EEEE)'),
+    'Course: ' + (course ? course.name_he : '(none)'),
+    'Message type: ' + kindHe,
+    'Message date: ' + (m.posted_at || '-'),
+    'Author: ' + (m.author || '-'),
+    'Title: ' + m.title,
+    'Dates our parser saw in the text (may be wrong): ' + (m.detected_dates || '-'),
+    'Message text:',
+    '"""',
+    String(m.text || '').slice(0, 30000),
+    '"""',
+    '',
+    'Bahr\'s existing tasks:',
+    taskLines,
+    '',
+    'Already suggested from other messages (not yet accepted):',
+    pendingLines,
+  ].join('\n');
+}
+
+function cleanDate_(s) { s = String(s || '').trim(); return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : ''; }
+function cleanTime_(s) { s = String(s || '').trim(); return /^\d{2}:\d{2}$/.test(s) ? s : ''; }
+function parseSuggestions_(json) { try { const a = JSON.parse(json || '[]'); return Array.isArray(a) ? a : []; } catch (err) { return []; } }
+
+/** Reviews one inbox row with Gemini; returns the fields to save. */
+function aiReviewOne_(m, data, model) {
+  const course = data.courses.filter(function (c) { return c.slug === m.course; })[0];
+  const tasks = data.tasks.filter(function (t) { return !m.course || t.course === m.course || !t.course; })
+    .sort(function (a, b) { return String(b.updated_at).localeCompare(String(a.updated_at)); }).slice(0, 120);
+  const pending = [];
+  data.moodle_inbox.forEach(function (o) {
+    if (o.id === m.id || (m.course && o.course !== m.course)) return;
+    parseSuggestions_(o.ai_suggestions).forEach(function (sg) {
+      if (sg.type === 'new' && sg.state === 'open') pending.push(sg.title + (sg.due_date ? ' (' + sg.due_date + ')' : ''));
+    });
+  });
+  const res = gemini_('models/' + model + ':generateContent', {
+    contents: [{ role: 'user', parts: [{ text: aiPrompt_(m, course, tasks, pending) }] }],
+    generationConfig: { temperature: 0.2, responseMimeType: 'application/json', responseSchema: AI_SCHEMA },
+  });
+  const cand = (res.candidates || [])[0];
+  const text = cand && cand.content && (cand.content.parts || []).map(function (p) { return p.text || ''; }).join('');
+  if (!text) throw new Error('empty answer' + (cand && cand.finishReason ? ' (' + cand.finishReason + ')' : ''));
+  const out = JSON.parse(text);
+  const byId = {};
+  data.tasks.forEach(function (t) { byId[t.id] = t; });
+  const sugg = [];
+  (out.new_tasks || []).forEach(function (t) {
+    if (!String(t.title || '').trim()) return;
+    sugg.push({ id: 'n' + sugg.length, type: 'new', state: 'open', title: String(t.title).trim(), course: m.course || '',
+      due_date: cleanDate_(t.due_date), due_time: cleanTime_(t.due_time),
+      estimate_hours: Number(t.estimate_hours) > 0 ? Math.round(Number(t.estimate_hours) * 2) / 2 : '',
+      notes: String(t.notes || '').trim(), reason: String(t.reason || '').trim() });
+  });
+  (out.updates || []).forEach(function (u) {
+    const t = byId[u.task_id];
+    if (!t) return;
+    const due = cleanDate_(u.due_date), time = cleanTime_(u.due_time), add = String(u.notes_to_add || '').trim();
+    if ((!due || due === t.due_date) && (!time || time === t.due_time) && !add) return; // nothing actually changes
+    sugg.push({ id: 'u' + sugg.length, type: 'update', state: 'open', task_id: t.id, title: t.title,
+      old_due: t.due_date + (t.due_time ? ' ' + t.due_time : ''), due_date: due, due_time: time, notes_to_add: add,
+      reason: String(u.reason || '').trim() });
+  });
+  (out.covered || []).forEach(function (c) {
+    const t = byId[c.task_id];
+    if (t) sugg.push({ id: 'c' + sugg.length, type: 'covered', state: 'info', task_id: t.id, title: t.title, reason: String(c.what || '').trim() });
+  });
+  return { ai_status: 'done', ai_summary: String(out.summary || '').trim(), ai_suggestions: JSON.stringify(sugg), ai_checked_at: now_() };
+}
+
+/**
+ * Reviews inbox messages that haven't been reviewed yet (or one message again: opts.id).
+ * Runs from the 10-minute trigger and from the app ("בדוק שוב"). At most AI_MAX_PER_RUN messages per run.
+ */
+function aiReview_(opts) {
+  opts = opts || {};
+  const key = PropertiesService.getScriptProperties().getProperty('GEMINI_KEY');
+  if (!key) return { status: 'not connected', reviewed: 0 };
+  const data = { tasks: readTable_('tasks'), courses: readTable_('courses'), moodle_inbox: readTable_('moodle_inbox') };
+  const todo = data.moodle_inbox.filter(function (m) {
+    if (opts.id) return m.id === opts.id;
+    return m.status === 'new' && m.kind !== 'date_change' && (!m.ai_status || m.ai_status === 'pending' || /^error/.test(m.ai_status));
+  }).sort(function (a, b) { return String(a.posted_at).localeCompare(String(b.posted_at)); }).slice(0, AI_MAX_PER_RUN);
+  if (!todo.length) return { status: 'nothing to review', reviewed: 0 };
+  let model = geminiModel_(key);
+  let reviewed = 0, lastErr = '';
+  for (let i = 0; i < todo.length; i++) {
+    const m = todo[i];
+    let fields;
+    try {
+      fields = aiReviewOne_(m, data, model);
+    } catch (err) {
+      if (err.code === 404 && !getSetting_('ai_model')) { // the cached model was retired: pick again, retry once
+        model = geminiModel_(key, true);
+        try { fields = aiReviewOne_(m, data, model); } catch (err2) { err = err2; }
+      }
+      if (!fields) {
+        lastErr = err.message;
+        if (err.code === 429) break; // over the free quota: try again next run
+        fields = { ai_status: 'error: ' + err.message.slice(0, 300), ai_checked_at: now_() };
+      }
+    }
+    withLock_(function () { upsert_('moodle_inbox', Object.assign({ id: m.id }, fields), { touch: false }); });
+    Object.assign(m, fields); // later messages in this run see these suggestions
+    if (fields.ai_status === 'done') reviewed++;
+  }
+  const status = (lastErr ? 'error: ' + lastErr.slice(0, 300) : 'ok') + ' · ' + reviewed + ' reviewed · ' + now_() + ' · ' + model;
+  setSetting_('ai_status', status);
+  return { status: status, reviewed: reviewed };
+}
+
+/** Diagnostics — run from the Apps Script editor: shows the model and reviews the newest message again. */
+function debugAi() {
+  const log = function (label, v) { Logger.log(label + ': ' + JSON.stringify(v).slice(0, 3000)); };
+  const key = PropertiesService.getScriptProperties().getProperty('GEMINI_KEY');
+  if (!key) { log('no Gemini key', 'add it in the app: ⚙️ → AI'); return; }
+  try { log('model', geminiModel_(key, true)); } catch (err) { log('model FAILED', err.message); return; }
+  const last = readTable_('moodle_inbox').filter(function (m) { return m.kind !== 'date_change'; })
+    .sort(function (a, b) { return String(b.posted_at).localeCompare(String(a.posted_at)); })[0];
+  if (!last) { log('inbox empty', ''); return; }
+  log('reviewing', last.title);
+  log('result', aiReview_({ id: last.id }));
+  log('suggestions', parseSuggestions_(readTable_('moodle_inbox').filter(function (m) { return m.id === last.id; })[0].ai_suggestions));
 }
 
 /* ------------------------------------------------------------ background ---- */
@@ -857,6 +1131,8 @@ function scheduledSync() {
       if (!last || Date.now() - toDate_(last).getTime() >= (every - 1) * 60000) moodleCheck_();
     } catch (err) { setSetting_('moodle_status', 'error: ' + err.message); }
   } finally { lock.releaseLock(); }
+  // AI review runs outside the lock (Gemini can take a few seconds per message; the app must stay writable)
+  try { aiReview_({}); } catch (err) { setSetting_('ai_status', 'error: ' + err.message); }
 }
 
 /**
