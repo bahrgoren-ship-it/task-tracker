@@ -597,7 +597,9 @@ function moodle_(fn, params, token) {
     { method: 'post', payload: payload, muteHttpExceptions: true });
   if (res.getResponseCode() !== 200) throw new Error('Moodle HTTP ' + res.getResponseCode());
   const j = JSON.parse(res.getContentText());
-  if (j && j.exception) throw new Error((j.errorcode || 'error') + ': ' + (j.message || ''));
+  if (j && j.exception) {
+    throw new Error((j.errorcode || 'error') + ': ' + (j.message || '') + (j.debuginfo ? ' [' + j.debuginfo + ']' : ''));
+  }
   return j;
 }
 
@@ -608,23 +610,77 @@ function moodle_(fn, params, token) {
  */
 function forumDiscussions_(forumId, perpage) {
   const props = PropertiesService.getScriptProperties();
-  const known = props.getProperty('MOODLE_FORUM_SORTORDER');
-  const tries = (known !== null ? [known] : []).concat(['1', '3', '0', '']);
+  const variants = [ // parameter sets for mod_forum_get_forum_discussions, tried in order
+    { },
+    { sortorder: -1, page: -1, perpage: 0 },
+    { page: 0, perpage: perpage },
+    { sortorder: 1, page: 0, perpage: perpage },
+    { sortorder: 1 },
+    { sortorder: 3, page: 0, perpage: perpage },
+  ];
+  const known = props.getProperty('MOODLE_FORUM_VARIANT');
+  const order = (known !== null ? [Number(known)] : []).concat(variants.map(function (v, i) { return i; }));
   const errors = [];
-  for (let i = 0; i < tries.length; i++) {
-    const p = { forumid: forumId, page: 0, perpage: perpage };
-    if (tries[i] !== '') p.sortorder = tries[i];
+  for (let k = 0; k < order.length; k++) {
+    const i = order[k];
+    const p = Object.assign({ forumid: forumId }, variants[i]);
     try {
       const res = moodle_('mod_forum_get_forum_discussions', p);
-      if (known !== tries[i]) props.setProperty('MOODLE_FORUM_SORTORDER', tries[i]);
+      if (known !== String(i)) props.setProperty('MOODLE_FORUM_VARIANT', String(i));
       return res;
-    } catch (err) { errors.push('sortorder ' + (tries[i] || 'none') + ': ' + err.message); }
+    } catch (err) { if (k === 0 || errors.length < 3) errors.push(JSON.stringify(variants[i]) + ': ' + err.message); }
   }
-  try {
-    return moodle_('mod_forum_get_forum_discussions_paginated',
-      { forumid: forumId, sortby: 'timemodified', sortdirection: 'DESC', page: 0, perpage: perpage });
-  } catch (err) { errors.push('paginated: ' + err.message); }
   throw new Error('forum ' + forumId + ': ' + errors.join(' / '));
+}
+
+/**
+ * Fallback when the Moodle API refuses: read the announcements moodle-dl already saved to Drive
+ * (<course Moodle folder>/<section>/לוח הודעות/<yy-mm-dd subject>/[<post id>] <author>.md).
+ */
+const STUDIES_FOLDER_ID = '1HoErIXnpHGZiuPmThqXuOVe4iwEMKdDs'; // Technion Studies
+function driveFolderByPath_(path) {
+  let f = DriveApp.getFolderById(STUDIES_FOLDER_ID);
+  const parts = String(path || '').split('/').filter(String);
+  for (let i = 0; i < parts.length; i++) {
+    const it = f.getFoldersByName(parts[i]);
+    if (!it.hasNext()) return null;
+    f = it.next();
+  }
+  return f;
+}
+function driveAnnouncements_(course) {
+  const root = driveFolderByPath_(course.moodle_folder);
+  if (!root) throw new Error('Drive folder not found: ' + course.moodle_folder);
+  const boards = [];
+  const sections = root.getFolders();
+  while (sections.hasNext()) {
+    const it = sections.next().getFoldersByName('לוח הודעות');
+    while (it.hasNext()) boards.push(it.next());
+  }
+  const out = [];
+  boards.forEach(function (board) {
+    const ds = board.getFolders();
+    while (ds.hasNext()) {
+      const d = ds.next();
+      const m = /^(\d{2})-(\d{2})-(\d{2}) (.*)$/.exec(d.getName());
+      const files = [];
+      const fi = d.getFiles();
+      while (fi.hasNext()) files.push(fi.next());
+      const posts = files.map(function (f) {
+        const pm = /^\[(\d+)\]\s*(.*?)\.(md|html|txt)$/.exec(f.getName());
+        return pm ? { id: Number(pm[1]), author: pm[2], file: f } : null;
+      }).filter(Boolean).sort(function (a, b) { return a.id - b.id; });
+      if (!posts.length) continue;
+      const first = posts[0];
+      out.push({
+        ref: 'post:file' + first.id,
+        posted: m ? '20' + m[1] + '-' + m[2] + '-' + m[3] + ' ' + fmt_(first.file.getDateCreated(), 'HH:mm') : fmt_(first.file.getDateCreated()),
+        title: m ? m[4] : d.getName(), author: first.author,
+        text: first.file.getBlob().getDataAsString('UTF-8'), url: d.getUrl(),
+      });
+    }
+  });
+  return out;
 }
 
 function setMoodleToken_(token) {
@@ -675,7 +731,7 @@ function moodleCheck_() {
   const taskByRef = {};
   readTable_('tasks').forEach(function (t) { if (t.moodle_ref) taskByRef[t.moodle_ref] = t; });
   const errors = [];
-  let added = 0;
+  let added = 0, usedDrive = false;
   const add = function (row) {
     if (inboxRefs[row.moodle_ref]) return;
     inboxRefs[row.moodle_ref] = true;
@@ -699,9 +755,24 @@ function moodleCheck_() {
 
   courses.forEach(function (c) {
     const forumId = forumOf[c.slug];
-    if (!forumId) return;
     try {
-      const res = forumDiscussions_(forumId, 40);
+      let res;
+      try {
+        if (!forumId) throw new Error('no news forum found');
+        res = forumDiscussions_(forumId, 40);
+      } catch (apiErr) {
+        // API refused → use the copies moodle-dl saved in Drive
+        driveAnnouncements_(c).forEach(function (p) {
+          if (taskByRef[p.ref]) return;
+          add({
+            course: c.slug, kind: 'announcement', moodle_ref: p.ref, posted_at: p.posted, title: p.title,
+            author: p.author, text: p.text.slice(0, 3000),
+            detected_dates: detectDates_(p.title + '\n' + p.text, toDate_(p.posted.slice(0, 10))).join(', '), url: p.url,
+          });
+        });
+        usedDrive = true;
+        return;
+      }
       (res.discussions || []).forEach(function (d) {
         const did = d.discussion || d.id;
         const ref = 'post:' + did;
@@ -749,7 +820,8 @@ function moodleCheck_() {
     });
   } catch (err) { errors.push('assignments: ' + err.message); }
 
-  const status = errors.length ? 'error: ' + errors.join(' | ') : 'ok · ' + added + ' new';
+  const status = errors.length ? 'error: ' + errors.join(' | ')
+    : 'ok · ' + added + ' new' + (usedDrive ? ' (announcements read from the Drive copy)' : '');
   setSetting_('moodle_last_check', now_());
   setSetting_('moodle_status', status);
   return { status: status, added: added };
@@ -799,11 +871,15 @@ function debugMoodle() {
   const news = forums.filter(function (f) { return f.type === 'news'; })[0];
   if (!news) { log('no news forum found', ''); return; }
   try {
-    PropertiesService.getScriptProperties().deleteProperty('MOODLE_FORUM_SORTORDER');
+    PropertiesService.getScriptProperties().deleteProperty('MOODLE_FORUM_VARIANT');
     const r = forumDiscussions_(news.id, 5);
-    log('discussions OK (sortorder ' + PropertiesService.getScriptProperties().getProperty('MOODLE_FORUM_SORTORDER') + ')',
+    log('discussions OK (variant ' + PropertiesService.getScriptProperties().getProperty('MOODLE_FORUM_VARIANT') + ')',
       (r.discussions || []).map(function (d) { return { id: d.id, discussion: d.discussion, subject: d.subject, created: d.created }; }));
   } catch (err) { log('discussions FAILED', err.message); }
+  try {
+    const c = courses.filter(function (x) { return x.slug === 'databases'; })[0] || courses[0];
+    log('Drive copy (' + c.slug + ')', driveAnnouncements_(c).map(function (p) { return p.posted + ' ' + p.title; }));
+  } catch (err) { log('Drive copy FAILED', err.message); }
   try {
     const r = moodleCheck_();
     log('full check', r);
