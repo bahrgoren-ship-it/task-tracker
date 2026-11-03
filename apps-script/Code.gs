@@ -679,8 +679,12 @@ function moodleCheck_() {
       try {
         res = moodle_('mod_forum_get_forum_discussions', { forumid: forumId, page: 0, perpage: 40 });
       } catch (err) {
-        res = moodle_('mod_forum_get_forum_discussions_paginated',
-          { forumid: forumId, sortby: 'timemodified', sortdirection: 'DESC', page: 0, perpage: 40 });
+        try {
+          res = moodle_('mod_forum_get_forum_discussions_paginated',
+            { forumid: forumId, sortby: 'timemodified', sortdirection: 'DESC', page: 0, perpage: 40 });
+        } catch (err2) {
+          throw new Error('forum ' + forumId + ': ' + err.message + ' / paginated: ' + err2.message);
+        }
       }
       (res.discussions || []).forEach(function (d) {
         const did = d.discussion || d.id;
@@ -752,4 +756,38 @@ function scheduledSync() {
       if (!last || Date.now() - toDate_(last).getTime() >= (every - 1) * 60000) moodleCheck_();
     } catch (err) { setSetting_('moodle_status', 'error: ' + err.message); }
   } finally { lock.releaseLock(); }
+}
+
+/**
+ * Diagnostics — run from the Apps Script editor (choose debugMoodle → Run) and look at the Execution log.
+ * Prints what Moodle answers for each step of the check. Never prints the token.
+ */
+function debugMoodle() {
+  const log = function (label, v) { Logger.log(label + ': ' + JSON.stringify(v).slice(0, 1500)); };
+  try {
+    const info = moodle_('core_webservice_get_site_info', {});
+    const fns = (info.functions || []).map(function (f) { return f.name; });
+    log('site', { user: info.fullname, release: info.release, version: info.version });
+    log('functions available', ['mod_forum_get_forums_by_courses', 'mod_forum_get_forum_discussions',
+      'mod_forum_get_forum_discussions_paginated', 'mod_assign_get_assignments', 'core_course_get_contents']
+      .map(function (n) { return n + '=' + (fns.indexOf(n) >= 0); }));
+  } catch (err) { log('site info FAILED', err.message); return; }
+  const courses = readTable_('courses');
+  const fp = {};
+  courses.forEach(function (c, i) { if (c.moodle_course_id) fp['courseids[' + i + ']'] = c.moodle_course_id; });
+  let forums = [];
+  try {
+    forums = moodle_('mod_forum_get_forums_by_courses', fp) || [];
+    log('forums', forums.map(function (f) { return { id: f.id, cmid: f.cmid, course: f.course, type: f.type, name: f.name }; }));
+  } catch (err) { log('forums FAILED', err.message); }
+  const news = forums.filter(function (f) { return f.type === 'news'; })[0];
+  if (!news) { log('no news forum found', ''); return; }
+  ['mod_forum_get_forum_discussions', 'mod_forum_get_forum_discussions_paginated'].forEach(function (fn) {
+    try {
+      const r = moodle_(fn, fn.indexOf('paginated') > 0
+        ? { forumid: news.id, sortby: 'timemodified', sortdirection: 'DESC', page: 0, perpage: 5 }
+        : { forumid: news.id, page: 0, perpage: 5 });
+      log(fn + ' OK', (r.discussions || []).map(function (d) { return { id: d.id, discussion: d.discussion, subject: d.subject }; }));
+    } catch (err) { log(fn + ' FAILED (forum ' + news.id + ')', err.message); }
+  });
 }
