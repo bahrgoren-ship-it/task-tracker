@@ -3,7 +3,7 @@
 
 import { todayIL, addDays, nowStampIL } from './dates.js';
 
-const LS_KEY = 'ht.demo.v4';
+const LS_KEY = 'ht.demo.v5';
 
 const COURSES = [
   ['ds-algs', 'מבני נתונים ואלגוריתמים', 'מבני נתונים', '#3B6FB6'],
@@ -33,6 +33,8 @@ function seed() {
       task('t_demo05', 'תרגיל בית 2', 'algebraic-methods', 'todo', 12, { links: 'https://moodle26.technion.ac.il' }),
       task('t_demo06', 'לקרוא פרק 2 בספר', 'game-theory', 'todo', null),
       task('t_demo07', 'רענון פייתון', 'databases', 'done', -1),
+      task('t_demo08', 'סיכום הרצאה 3', 'statistics-1', 'todo', 0),
+      task('t_demo09', 'קריאה: עצים מאוזנים', 'ds-algs', 'todo', 3, { estimate_hours: '1.5', due_time: '12:00' }),
     ],
     sessions: [
       { id: 's_demo01', task_id: 't_demo02', start: `${addDays(t, -1)} 20:00`, end: `${addDays(t, -1)} 20:50`,
@@ -43,7 +45,8 @@ function seed() {
       { id: 'b_demo02', task_id: 't_demo04', start: `${t} 18:00`, end: `${t} 19:00`, state: 'draft', sync_calendar: '', calendar_event_id: '', note: '', updated_at: now },
     ],
     courses: COURSES,
-    settings: [{ key: 'default_block_minutes', value: '60' }, { key: 'ai_status', value: 'connected · הדגמה' }],
+    settings: [{ key: 'default_block_minutes', value: '60' }, { key: 'ai_status', value: 'connected · הדגמה' },
+      { key: 'moodle_status', value: 'ok · הדגמה' }, { key: 'moodle_last_check', value: now }],
     moodle_inbox: [
       { id: 'm_demo01', course: 'databases', kind: 'announcement', moodle_ref: 'post:1', posted_at: `${addDays(t, -1)} 21:04`,
         title: 'עדכונים', author: 'אפק וקנין',
@@ -98,7 +101,12 @@ export class DemoBackend {
     if (p.action === 'bootstrap') return { ...structuredClone(this.db), api_version: 4 };
     if (p.action === 'busy') return demoBusy(p.from, p.to);
     if (p.action === 'syncNow') return { calendar: { pulled: 0, pushed: 0 } };
-    if (p.action === 'moodleCheck') return { status: 'ok · 0 new (הדגמה)', added: 0 };
+    if (p.action === 'moodleCheck') {
+      const row = this.db.settings.find((r) => r.key === 'moodle_last_check');
+      if (row) row.value = nowStampIL(); else this.db.settings.push({ key: 'moodle_last_check', value: nowStampIL() });
+      this.save();
+      return { status: 'ok · 0 new (הדגמה)', added: 0 };
+    }
     if (p.action === 'setMoodleToken') return { connected: true, fullname: 'הדגמה' };
     if (p.action === 'setGeminiKey') return { connected: true, model: 'הדגמה' };
     if (p.action === 'aiReview') { // fake review: one suggested task per waiting message

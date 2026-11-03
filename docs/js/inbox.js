@@ -23,6 +23,17 @@ export function suggestionsOf(m) {
 }
 const aiConnected = () => /^(connected|ok|error)/.test(store.setting('ai_status', ''));
 
+/** Line under the screen title. */
+export function summary() {
+  const n = store.inboxNew().length;
+  const lastCheck = store.setting('moodle_last_check', '');
+  return `${n ? (n === 1 ? 'חדשה אחת' : `${n} חדשות`) : 'אין חדשות'}${lastCheck ? `, נבדק ${checkedLabel(lastCheck)}` : ''}`;
+}
+function checkedLabel(stamp) {
+  const d = stamp.slice(0, 10), time = stamp.slice(11, 16);
+  return d === todayIL() ? `ב-${time}` : `ב-${shortDate(d)}`;
+}
+
 export function render(force = false) {
   if (!root || root.hidden) return;
   const showAll = store.ui('inboxAll', false);
@@ -36,7 +47,6 @@ export function render(force = false) {
   const newCount = store.inboxNew().length;
   const status = store.setting('moodle_status', '');
   const aiStatus = store.setting('ai_status', '');
-  const lastCheck = store.setting('moodle_last_check', '');
   let head = '';
   if (store.apiVersion && store.apiVersion < 4) {
     head = `<div class="note">כדי שה-AI יעבור על ההודעות צריך לעדכן את השרת (Apps Script) לגרסה החדשה — ההוראות ב-SETUP.md.</div>`;
@@ -52,15 +62,15 @@ export function render(force = false) {
   }
   root.innerHTML = `
     <div class="inbox-top">
-      <div><h2>הודעות ממודל</h2><p class="summary">${newCount ? `${newCount} חדשות` : 'אין הודעות חדשות'}${lastCheck ? ` · נבדק ${esc(lastCheck.slice(5).replace('-', '.'))}` : ''}</p></div>
-      <div class="row">
-        <button class="btn ghost sm" data-check>בדוק עכשיו</button>
-        <button class="btn ghost sm" data-all>${showAll ? 'רק חדשות' : 'הצג הכל'}</button>
+      <div class="seg-toggle" role="group" aria-label="אילו הודעות להציג">
+        <button type="button" data-all="new" aria-pressed="${!showAll}">חדשות${newCount ? ` <b>${newCount}</b>` : ''}</button>
+        <button type="button" data-all="all" aria-pressed="${showAll}">הכל</button>
       </div>
+      <button class="btn ghost sm" data-check>בדוק במודל עכשיו</button>
     </div>
     ${head}
     ${items.length ? `<ul class="inbox-list">${items.map(itemHtml).join('')}</ul>`
-      : `<div class="empty"><p>${showAll ? 'עוד לא הגיעו הודעות.' : 'הכל מטופל 👌'}</p></div>`}`;
+      : `<div class="empty"><p>${showAll ? 'עוד לא הגיעו הודעות ממודל.' : 'אין הודעות שמחכות לך 👌'}</p></div>`}`;
 }
 
 function itemHtml(m) {
@@ -90,9 +100,11 @@ function itemHtml(m) {
       ${!handled && m.kind === 'date_change' && linked ? '<button class="btn primary sm" data-act="redate">עדכן את התאריך</button>' : ''}
       ${!handled ? `<button class="btn ${openSuggestions(m).length ? 'ghost' : 'primary'} sm" data-act="read">סמן כנקרא</button>`
         : '<button class="btn ghost sm" data-act="reopen">החזר לחדשות</button>'}
-      ${m.kind !== 'date_change' ? '<button class="btn ghost sm" data-act="manual">משימה ידנית</button>' : ''}
-      ${m.kind !== 'date_change' && store.apiVersion >= 4 && aiConnected() ? `<button class="btn ghost sm" data-act="rereview" ${reviewing.has(m.id) ? 'disabled' : ''}>${reviewing.has(m.id) ? 'בודק…' : 'בדוק שוב עם AI'}</button>` : ''}
-      ${m.url ? `<a class="btn ghost sm" href="${esc(m.url)}" target="_blank" rel="noopener">פתח במודל</a>` : ''}
+      <span class="quiet-acts">
+        ${m.kind !== 'date_change' ? '<button class="quiet" data-act="manual">משימה ידנית</button>' : ''}
+        ${m.kind !== 'date_change' && store.apiVersion >= 4 && aiConnected() ? `<button class="quiet" data-act="rereview" ${reviewing.has(m.id) ? 'disabled' : ''}>${reviewing.has(m.id) ? 'בודק…' : 'בדוק שוב עם AI'}</button>` : ''}
+        ${m.url ? `<a class="quiet" href="${esc(m.url)}" target="_blank" rel="noopener">פתח במודל</a>` : ''}
+      </span>
     </div>
   </li>`;
 }
@@ -171,7 +183,8 @@ function setSuggestion(m, sgId, patch) {
 }
 
 async function onClick(e) {
-  if (e.target.closest('[data-all]')) { store.setUi('inboxAll', !store.ui('inboxAll', false)); return render(true); }
+  const allBtn = e.target.closest('[data-all]');
+  if (allBtn) { store.setUi('inboxAll', allBtn.dataset.all === 'all'); return render(true); }
   if (e.target.closest('[data-check]')) {
     if (!store.configured || store.apiVersion < 3) return ui.toast('צריך לעדכן את השרת קודם');
     ui.toast('בודק את מודל…');

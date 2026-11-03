@@ -28,6 +28,10 @@ Bahr's task tracker (homework first; may grow to all tasks): a Hebrew (RTL) inst
 - Changing `Code.gs` only takes effect after Bahr pastes it into the Apps Script editor and creates a new
   deployment version (see SETUP.md) — tell him when that's needed.
 - Test UI changes in demo mode (settings → "נסה במצב הדגמה") on phone, iPad and desktop widths.
+- Look ("a student diary on graph paper"): colour tokens live at the top of `styles.css` — ink on cool paper,
+  one blue accent, red only for overdue / due times, course colour as the only other colour. Font: IBM Plex Sans
+  Hebrew. Tasks are grouped by day into one list per day (rows with dividers), with the deadline at the end of
+  the title line. Below 900px the tabs are a bottom bar; from 900px they sit in the header.
 
 ## Roadmap
 1. ✅ Sheet + Notion import. 2. ✅ Tasks screen + time tracking (estimate, total, stopwatch/pomodoro).

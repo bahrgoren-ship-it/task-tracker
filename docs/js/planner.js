@@ -52,6 +52,17 @@ function resetView() {
 }
 function visibleDays() { return Array.from({ length: view.days }, (_, i) => addDays(view.start, i)); }
 
+/** Line under the screen title: how much work is planned in the visible days. */
+export function summary() {
+  if (!view.start) return '';
+  const days = visibleDays();
+  const blocks = store.data.blocks.filter((b) => b.state !== 'skipped' && days.includes(b.start.slice(0, 10)));
+  const min = blocks.reduce((s, b) => s + Math.max(0, minutes(b.start, b.end)), 0);
+  const drafts = blocks.filter((b) => b.state === 'draft').length;
+  if (!blocks.length) return 'אין בלוקי עבודה בימים האלה';
+  return `${fmtMinutes(min)} ש׳ מתוכננות${drafts ? `, ${drafts === 1 ? 'טיוטה אחת' : `${drafts} טיוטות`}` : ''}`;
+}
+
 /* ------------------------------------------------------------------ render ---- */
 
 export function render(force = false) {
@@ -101,6 +112,7 @@ export function render(force = false) {
   sc.scrollTop = keepScroll ?? Math.max(0, (Math.max(START_H, +nowIL().time.slice(0, 2) - 2) - START_H) * hourPx());
   drawNowLine();
   loadBusy(days);
+  ui.onRender?.();
 }
 
 function trayHtml() {
@@ -113,9 +125,9 @@ function trayHtml() {
       const planned = store.plannedMinutes(t.id), spent = store.spentMinutes(t.id), est = Math.round((Number(t.estimate_hours) || 0) * 60);
       const missing = est ? est - planned - spent : 0;
       return `<li class="tray-task ${selectedTask === t.id ? 'sel' : ''}" data-task="${esc(t.id)}" style="--c:${esc(c ? c.color : '#8A8F98')}">
-        <b>${esc(t.title)}</b>
-        <small>${t.due_date ? `<span class="${dayDiff(todayIL(), t.due_date) < 0 ? 'late' : ''}">${esc(dueLabel(t.due_date, t.due_time))}</span>` : 'ללא תאריך'}
-          · מתוכנן ${fmtMinutes(planned)}${est ? ` / ${fmtMinutes(est)}` : ''}${missing > 0 ? ` <em>חסר ${fmtMinutes(missing)}</em>` : ''}</small>
+        <b dir="auto">${esc(t.title)}</b>
+        <small>${t.due_date ? `<span class="${dayDiff(todayIL(), t.due_date) < 0 ? 'late' : ''}">${esc(dueLabel(t.due_date, t.due_time))}</span>` : 'ללא תאריך'}</small>
+        <small>מתוכנן ${fmtMinutes(planned)}${est ? ` מתוך ${fmtMinutes(est)}` : ''}${missing > 0 ? ` <em>חסר ${fmtMinutes(missing)}</em>` : ''}</small>
       </li>`;
     }).join('')}</ul>`;
 }
@@ -175,9 +187,9 @@ function blockHtml({ b, s, e, col, cols }) {
   const a = Math.max(s, START_H * 60), z = Math.min(e, END_H * 60);
   const h = Math.max(18, topOf(z) - topOf(a));
   const synced = !!b.calendar_event_id;
-  return `<div class="blk st-${esc(b.state)}" data-block="${esc(b.id)}"
+  return `<div class="blk st-${esc(b.state)} ${h < 60 ? 'short' : ''}" data-block="${esc(b.id)}"
       style="--c:${esc(c ? c.color : '#8A8F98')};top:${topOf(a)}px;height:${h}px;inset-inline-start:calc(${(100 / cols) * col}% + 1px);width:calc(${100 / cols}% - 3px)">
-    <div class="blk-t">${b.state === 'done' ? '✓ ' : ''}${esc(t ? t.title : '(משימה נמחקה)')}</div>
+    <div class="blk-t" dir="auto">${b.state === 'done' ? '✓ ' : ''}${esc(t ? t.title : '(משימה נמחקה)')}</div>
     ${h > 30 ? `<div class="blk-m"><bdi dir="ltr">${b.start.slice(11, 16)}–${b.end.slice(11, 16)}</bdi>${synced ? ' · 📅' : ''}${b.state === 'draft' ? ' · טיוטה' : ''}</div>` : ''}
     <button type="button" class="blk-x" data-unplace aria-label="הסר מהלוח" title="הסר מהלוח">✕</button>
     <div class="blk-resize" data-resize></div>
@@ -335,7 +347,7 @@ function startDrag() {
   const t = store.task(b ? b.task_id : drag.id);
   const c = t && store.course(t.course);
   drag.ghost.style.setProperty('--c', c ? c.color : '#8A8F98');
-  drag.ghost.innerHTML = `<b>${esc(t ? t.title : '')}</b><span></span>`;
+  drag.ghost.innerHTML = `<b dir="auto">${esc(t ? t.title : '')}</b><span></span>`;
   root.querySelector('.pl-grid').appendChild(drag.ghost);
   updateDrag();
   autoScroll();
@@ -456,7 +468,7 @@ function openChooser(day, startMin) {
   const tasks = store.data.tasks.filter(isOpen)
     .sort((a, b) => `${a.due_date || '9999'}`.localeCompare(`${b.due_date || '9999'}`));
   dlg.innerHTML = `<div class="sheet-form">
-    <header class="sheet-head"><h2>מה לעשות ב-${toHHMM(startMin)}, יום ${weekday(day)} ${shortDate(day)}?</h2>
+    <header class="sheet-head"><h2 tabindex="-1" autofocus>מה לעשות ב-${toHHMM(startMin)}, יום ${weekday(day)} ${shortDate(day)}?</h2>
       <button type="button" class="icon-btn" data-close aria-label="סגור"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button></header>
     <div class="sheet-body"><ul class="choose-list">${tasks.map((t) => {
       const c = store.course(t.course);
@@ -477,7 +489,7 @@ function openBlockSheet(id) {
   const dlg = document.querySelector('#blockSheet');
   const syncOn = store.setting('sync_blocks_to_calendar') === 'TRUE';
   dlg.innerHTML = `<form method="dialog" class="sheet-form">
-    <header class="sheet-head"><div><h2>${esc(t ? t.title : 'בלוק עבודה')}</h2>
+    <header class="sheet-head"><div><h2 tabindex="-1" autofocus>${esc(t ? t.title : 'בלוק עבודה')}</h2>
       ${c ? `<p class="sub"><i style="--c:${esc(c.color)}"></i>${esc(c.short_he || c.name_he)}</p>` : ''}</div>
       <button type="button" class="icon-btn" data-close aria-label="סגור"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button></header>
     <div class="sheet-body">
