@@ -592,7 +592,8 @@ const MOODLE_SITE = 'https://moodle26.technion.ac.il';
 function moodle_(fn, params, token) {
   token = token || PropertiesService.getScriptProperties().getProperty('MOODLE_TOKEN');
   if (!token) throw new Error('no Moodle token');
-  const payload = Object.assign({ wstoken: token, wsfunction: fn, moodlewsrestformat: 'json' }, params || {});
+  const payload = Object.assign({ wstoken: token, wsfunction: fn, moodlewsrestformat: 'json',
+    moodlewssettingfilter: 'true', moodlewssettingfileurl: 'true' }, params || {});
   const res = UrlFetchApp.fetch(MOODLE_SITE + '/webservice/rest/server.php',
     { method: 'post', payload: payload, muteHttpExceptions: true });
   if (res.getResponseCode() !== 200) throw new Error('Moodle HTTP ' + res.getResponseCode());
@@ -604,31 +605,43 @@ function moodle_(fn, params, token) {
 }
 
 /**
- * Discussions of one forum, newest first. Moodle 5.x rejects a missing/default sort order with
- * "invalidparameter", so explicit sort orders are tried (1 = last post desc, 3 = created desc …) and the one
- * that works is remembered. Older Moodle: falls back to the _paginated function.
+ * Discussions of one forum, newest first (Moodle's default order: latest post first).
+ * Technion's Moodle (5.2) rejects page sizes above 10 with "invalidparameter", so we ask exactly like moodle-dl
+ * does ({forumid, page, perpage: 10}) and read as many pages as needed. If that is refused, a few other parameter
+ * sets are tried; the one that works is remembered.
  */
-function forumDiscussions_(forumId, perpage) {
+const FORUM_PAGE_SIZE = 10;
+function forumDiscussions_(forumId, wanted) {
   const props = PropertiesService.getScriptProperties();
-  const variants = [ // parameter sets for mod_forum_get_forum_discussions, tried in order
-    { },
-    { sortorder: -1, page: -1, perpage: 0 },
-    { page: 0, perpage: perpage },
-    { sortorder: 1, page: 0, perpage: perpage },
-    { sortorder: 1 },
-    { sortorder: 3, page: 0, perpage: perpage },
+  const variants = [ // extra parameters for mod_forum_get_forum_discussions, tried in order
+    { },                 // = moodle-dl
+    { sortorder: 1 },    // last post, newest first
+    { sortorder: 3 },    // created, newest first
+    { sortorder: -1 },
   ];
-  const known = props.getProperty('MOODLE_FORUM_VARIANT');
-  const order = (known !== null ? [Number(known)] : []).concat(variants.map(function (v, i) { return i; }));
+  const fetchPage = function (i, page) {
+    const p = Object.assign({ forumid: forumId, page: page, perpage: FORUM_PAGE_SIZE }, variants[i]);
+    return moodle_('mod_forum_get_forum_discussions', p);
+  };
+  const known = props.getProperty('MOODLE_FORUM_VARIANT2');
+  const order = (known !== null && variants[Number(known)] ? [Number(known)] : [])
+    .concat(variants.map(function (v, i) { return i; }));
   const errors = [];
   for (let k = 0; k < order.length; k++) {
     const i = order[k];
-    const p = Object.assign({ forumid: forumId }, variants[i]);
-    try {
-      const res = moodle_('mod_forum_get_forum_discussions', p);
-      if (known !== String(i)) props.setProperty('MOODLE_FORUM_VARIANT', String(i));
-      return res;
-    } catch (err) { if (k === 0 || errors.length < 3) errors.push(JSON.stringify(variants[i]) + ': ' + err.message); }
+    let first;
+    try { first = fetchPage(i, 0); } catch (err) {
+      if (errors.length < 3) errors.push(JSON.stringify(variants[i]) + ': ' + err.message);
+      continue;
+    }
+    if (known !== String(i)) props.setProperty('MOODLE_FORUM_VARIANT2', String(i));
+    let all = first.discussions || [];
+    for (let page = 1; all.length >= page * FORUM_PAGE_SIZE && all.length < (wanted || 20); page++) {
+      const more = fetchPage(i, page).discussions || [];
+      if (!more.length) break;
+      all = all.concat(more);
+    }
+    return { discussions: all.slice(0, wanted || 20) };
   }
   throw new Error('forum ' + forumId + ': ' + errors.join(' / '));
 }
@@ -759,7 +772,7 @@ function moodleCheck_() {
       let res;
       try {
         if (!forumId) throw new Error('no news forum found');
-        res = forumDiscussions_(forumId, 40);
+        res = forumDiscussions_(forumId, 20);
       } catch (apiErr) {
         // API refused → use the copies moodle-dl saved in Drive
         driveAnnouncements_(c).forEach(function (p) {
@@ -871,9 +884,9 @@ function debugMoodle() {
   const news = forums.filter(function (f) { return f.type === 'news'; })[0];
   if (!news) { log('no news forum found', ''); return; }
   try {
-    PropertiesService.getScriptProperties().deleteProperty('MOODLE_FORUM_VARIANT');
+    PropertiesService.getScriptProperties().deleteProperty('MOODLE_FORUM_VARIANT2');
     const r = forumDiscussions_(news.id, 5);
-    log('discussions OK (variant ' + PropertiesService.getScriptProperties().getProperty('MOODLE_FORUM_VARIANT') + ')',
+    log('discussions OK (variant ' + PropertiesService.getScriptProperties().getProperty('MOODLE_FORUM_VARIANT2') + ')',
       (r.discussions || []).map(function (d) { return { id: d.id, discussion: d.discussion, subject: d.subject, created: d.created }; }));
   } catch (err) { log('discussions FAILED', err.message); }
   try {
