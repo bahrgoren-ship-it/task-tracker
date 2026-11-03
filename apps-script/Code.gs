@@ -657,15 +657,30 @@ function moodleCheck_() {
     added++;
   };
 
+  // Find each course's announcements forum (type "news"). courses.moodle_news_forum_id holds the forum's page id
+  // (cmid, as in the Moodle folder); the API needs the forum instance id, so we look it up.
+  const forumOf = {};
+  try {
+    const fp = {};
+    courses.forEach(function (c, i) { if (c.moodle_course_id) fp['courseids[' + i + ']'] = c.moodle_course_id; });
+    (moodle_('mod_forum_get_forums_by_courses', fp) || []).forEach(function (f) {
+      const c = courses.filter(function (x) { return String(x.moodle_course_id) === String(f.course); })[0];
+      if (!c) return;
+      const isNews = f.type === 'news' || String(f.cmid) === String(c.moodle_news_forum_id);
+      if (isNews && (!forumOf[c.slug] || f.type === 'news')) forumOf[c.slug] = f.id;
+    });
+  } catch (err) { errors.push('forums: ' + err.message); }
+
   courses.forEach(function (c) {
-    if (!c.moodle_news_forum_id) return;
+    const forumId = forumOf[c.slug];
+    if (!forumId) return;
     try {
       let res;
       try {
-        res = moodle_('mod_forum_get_forum_discussions', { forumid: c.moodle_news_forum_id, page: 0, perpage: 40 });
+        res = moodle_('mod_forum_get_forum_discussions', { forumid: forumId, page: 0, perpage: 40 });
       } catch (err) {
         res = moodle_('mod_forum_get_forum_discussions_paginated',
-          { forumid: c.moodle_news_forum_id, sortby: 'timemodified', sortdirection: 'DESC', page: 0, perpage: 40 });
+          { forumid: forumId, sortby: 'timemodified', sortdirection: 'DESC', page: 0, perpage: 40 });
       }
       (res.discussions || []).forEach(function (d) {
         const did = d.discussion || d.id;

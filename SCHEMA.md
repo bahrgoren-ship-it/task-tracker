@@ -80,7 +80,7 @@ Per task: planned hours = sum of `planned`+`done` blocks; done hours = sum of `d
 
 `slug`, `name_he`, `short_he` (chip label), `number`, `moodle_course_id` (on moodle26.technion.ac.il),
 `moodle_news_forum_id` (the course's לוח הודעות forum module), `color` (hex), `active`,
-`moodle_folder` (path under `Technion Studies`). Same slugs as `.ai/courses.json`.
+`moodle_folder` (path under `Technion Studies`). `moodle_news_forum_id` is the page id (cmid) of the לוח הודעות; the backend looks up the forum itself. Same slugs as `.ai/courses.json`.
 
 ## Tab `moodle_inbox` — new Moodle items waiting for Bahr's decision (app-managed)
 
