@@ -57,7 +57,14 @@ function boot() {
   render();
   if (store.configured) store.refresh(); else openSettings();
 
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+  if ('serviceWorker' in navigator) {
+    const hadController = !!navigator.serviceWorker.controller;
+    let reloaded = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => { // a new version was installed: show it
+      if (hadController && !reloaded && !document.querySelector('dialog[open]')) { reloaded = true; location.reload(); }
+    });
+    navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then((r) => r.update()).catch(() => {});
+  }
 }
 
 /* ---------------------------------------------------------- render ---- */
