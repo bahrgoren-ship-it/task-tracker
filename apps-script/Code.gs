@@ -1333,7 +1333,7 @@ function moodleCheck_() {
   if (added) dedupeInbox_();
   const drive = (board.saved ? ' · Drive: ' + board.saved + ' file(s) saved' : '') +
     (board.tooBig ? ' · Drive: ' + board.tooBig + ' attachment(s) over 45 MB left for the laptop sync' : '') +
-    (board.errors.length ? ' · Drive copy problem: ' + board.errors.join(' | ').slice(0, 300) : '');
+    (board.errors.length ? ' · saving to Drive failed: ' + board.errors.join(' | ').slice(0, 300) : '');
   const status = errors.length ? 'error: ' + errors.join(' | ') + drive
     : 'ok · ' + added + ' new' + drive +
       (viaDrive.length ? ' · via Drive copy · Moodle API: ' + viaDrive[0].slice(0, 300) : '');
