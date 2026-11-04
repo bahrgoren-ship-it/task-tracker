@@ -4,6 +4,7 @@ import { bucketOf, dueLabel, todayIL, addDays, shortDate, weekday, fmtMinutes, f
 import * as timer from './timer.js';
 import * as planner from './planner.js';
 import * as inbox from './inbox.js';
+import * as suggestions from './suggestions.js';
 import { aiState, aiText, moodleState, moodleText, calendarState, calendarText, noticeHtml, friendlyError, dismiss, whenLabel } from './notices.js';
 
 const SHEET_URL = 'https://docs.google.com/spreadsheets/d/10qLYln2zUiMo7dEI3xZ8pj4ncGX7TRmATZNuZfvUfWM/edit';
@@ -62,6 +63,7 @@ function boot() {
   });
   planner.initPlanner($('#planner'), { openEditor, openTimer, toast, onRender: () => renderSummary() });
   inbox.initInbox($('#inbox'), { openEditor, toast });
+  suggestions.init({ toast, render: () => { lastSig = ''; render(); } });
   showTab(store.ui('tab', 'tasks'));
   // the "new task" button shrinks to a round button while scrolling, so it covers less of the list
   let lastY = 0;
@@ -142,7 +144,7 @@ function render() {
   badge.textContent = n > 99 ? '99+' : String(n);
   badge.hidden = !n;
   if ($('#timerSheet').open) renderTimerSheet();
-  const sig = JSON.stringify([store.data.tasks, store.data.sessions, store.setting('active_timer'), store.data.courses, store.ui('course', 'all'),
+  const sig = JSON.stringify([store.data.suggestions, store.data.blocks.length, store.data.tasks, store.data.sessions, store.setting('active_timer'), store.data.courses, store.ui('course', 'all'),
     store.ui('showDone', false), store.configured, store.status === 'syncing' && !store.data.tasks.length, todayIL()]);
   if (sig === lastSig) return;
   lastSig = sig;
@@ -221,7 +223,7 @@ function renderTasks() {
   }
   if (!html) html = `<div class="empty"><p>${store.ui('course', 'all') === 'all' ? 'עוד אין משימות.' : 'אין משימות בקורס הזה.'}</p><button class="btn primary" data-action="new">משימה חדשה</button></div>`;
   else if (!tasks.some((t) => bucketOf(t) !== 'done')) html = `<div class="empty small"><p>אין משימות פתוחות 🎉</p></div>` + html;
-  main.innerHTML = html;
+  main.innerHTML = suggestions.html() + html;
 }
 
 // "היום" and "מחר" headings also show the actual day, like a diary page.
@@ -284,6 +286,7 @@ function onFilterClick(e) {
 }
 
 function onMainClick(e) {
+  if (suggestions.onClick(e)) return;
   const el = e.target.closest('[data-action]');
   if (!el) return;
   const action = el.dataset.action;

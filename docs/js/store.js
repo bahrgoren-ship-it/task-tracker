@@ -16,8 +16,8 @@ function lsSet(k, v) {
   try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* storage full or blocked */ }
 }
 
-const EMPTY = { tasks: [], sessions: [], blocks: [], courses: [], settings: [], moodle_inbox: [] };
-const KEY = { tasks: 'id', sessions: 'id', blocks: 'id', courses: 'slug', moodle_inbox: 'id', settings: 'key' };
+const EMPTY = { tasks: [], sessions: [], blocks: [], courses: [], settings: [], moodle_inbox: [], suggestions: [] };
+const KEY = { tasks: 'id', sessions: 'id', blocks: 'id', courses: 'slug', moodle_inbox: 'id', settings: 'key', suggestions: 'id' };
 
 export function newId(prefix) {
   const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';

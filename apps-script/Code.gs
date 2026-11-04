@@ -17,8 +17,8 @@
 
 const SHEET_ID = '10qLYln2zUiMo7dEI3xZ8pj4ncGX7TRmATZNuZfvUfWM';
 const TZ = 'Asia/Jerusalem';
-const API_VERSION = 5; // 5: calendars action, chosen blocks calendar, batch returns fresh rows
-const SCHEMA_VERSION = 5; // bump when SCHEMA / settings change; the Sheet is migrated automatically
+const API_VERSION = 6; // 5: calendars action, chosen blocks calendar, batch returns fresh rows · 6: suggestions tab
+const SCHEMA_VERSION = 6; // bump when SCHEMA / settings change; the Sheet is migrated automatically
 
 // Column order of each tab. Must match row 1 of the Sheet (see SCHEMA.md).
 const SCHEMA = {
@@ -31,9 +31,11 @@ const SCHEMA = {
   moodle_inbox: ['id', 'course', 'kind', 'moodle_ref', 'posted_at', 'title', 'author', 'text', 'detected_dates',
     'url', 'status', 'task_id', 'ai_status', 'ai_summary', 'ai_suggestions', 'ai_checked_at'],
   settings: ['key', 'value', 'meaning'],
+  // changes proposed by any AI with access to the Sheet; nothing happens until Bahr approves one in the app
+  suggestions: ['id', 'status', 'summary', 'table', 'op', 'row_id', 'fields', 'reason', 'by', 'created_at', 'decided_at', 'result'],
 };
-const KEY_COLUMN = { tasks: 'id', sessions: 'id', blocks: 'id', courses: 'slug', moodle_inbox: 'id', settings: 'key' };
-const ID_PREFIX = { tasks: 't', sessions: 's', blocks: 'b', moodle_inbox: 'm' };
+const KEY_COLUMN = { tasks: 'id', sessions: 'id', blocks: 'id', courses: 'slug', moodle_inbox: 'id', settings: 'key', suggestions: 'id' };
+const ID_PREFIX = { tasks: 't', sessions: 's', blocks: 'b', moodle_inbox: 'm', suggestions: 'sg' };
 // Columns removed in a later schema version (dropped by migrate_).
 const DROPPED = { tasks: ['grade'] };
 // Default settings rows: [key, value, meaning]. Missing keys are added by migrate_.
@@ -63,11 +65,11 @@ const DEFAULT_SETTINGS = [
   ['schema_version', String(SCHEMA_VERSION), 'Bumped when columns change (see SCHEMA.md).'],
 ];
 // Tables the app may write to, and which may have rows deleted.
-const WRITABLE = ['tasks', 'sessions', 'blocks', 'moodle_inbox', 'settings'];
+const WRITABLE = ['tasks', 'sessions', 'blocks', 'moodle_inbox', 'settings', 'suggestions'];
 const DELETABLE = ['tasks', 'sessions', 'blocks'];
 // A row must have these to be created. A change to a row that no longer exists (deleted on another device, merged
 // as a duplicate…) without them is dropped instead of creating half a row.
-const REQUIRED = { tasks: ['title'], sessions: ['task_id', 'start'], blocks: ['task_id', 'start', 'end'], moodle_inbox: ['moodle_ref'] };
+const REQUIRED = { tasks: ['title'], sessions: ['task_id', 'start'], blocks: ['task_id', 'start', 'end'], moodle_inbox: ['moodle_ref'], suggestions: ['op'] };
 // How Date cells (if someone typed a real date into the Sheet) are turned back into text.
 const DATE_FORMAT = { due_date: 'yyyy-MM-dd', due_time: 'HH:mm', posted_at: 'yyyy-MM-dd HH:mm',
   start: 'yyyy-MM-dd HH:mm', end: 'yyyy-MM-dd HH:mm', created_at: 'yyyy-MM-dd HH:mm',
@@ -120,6 +122,7 @@ function handle_(req) {
         return json_({ ok: true, data: { api_version: API_VERSION, now: now_() } });
       case 'bootstrap':
         if (Number(getSetting_('schema_version') || 1) < SCHEMA_VERSION) withLock_(migrate_);
+        if (suggestionsWithoutId_()) withLock_(fillSuggestionIds_);
         return json_({ ok: true, data: bootstrap_() });
       case 'batch':
         return json_({ ok: true, data: withLock_(function () { return batch_(req.ops || []); }) });
@@ -313,8 +316,81 @@ function migrate_() {
   if (existing.indexOf('blocks_calendar_name') < 0) setSetting_('sync_blocks_to_calendar', 'TRUE');
   upsert_('settings', { key: 'schema_version', value: String(SCHEMA_VERSION) });
   readTable_('tasks').forEach(function (t) { recomputeSpent_(t.id); });
+  writeAiHelp_();
   const fixed = cleanup_();
   return 'migrated to schema ' + SCHEMA_VERSION + ' · ' + JSON.stringify(fixed);
+}
+
+/* ------------------------------------------------- suggestions from any AI ---- */
+// An AI that can edit the Sheet adds a row to 'suggestions' (instructions: tab 'AI – איך להציע', and SCHEMA.md).
+// The app shows each pending row; on "אשר" the app itself makes the change (so the calendar sync etc. run as usual).
+
+function suggestionsWithoutId_() {
+  const sh = SpreadsheetApp.openById(SHEET_ID).getSheetByName('suggestions');
+  if (!sh || sh.getLastRow() < 2) return false;
+  const n = SCHEMA.suggestions.length;
+  return sh.getRange(2, 1, sh.getLastRow() - 1, n).getValues()
+    .some(function (r) { return !r[0] && r.some(function (v) { return v !== ''; }); });
+}
+/** Rows an AI typed in without an id / status / time get them, so the app can approve or reject them. */
+function fillSuggestionIds_() {
+  const sh = sheet_('suggestions');
+  const n = SCHEMA.suggestions.length, last = sh.getLastRow();
+  if (last < 2) return 0;
+  const vals = sh.getRange(2, 1, last - 1, n).getValues();
+  let fixed = 0;
+  vals.forEach(function (r, i) {
+    if (r[0] || !r.some(function (v) { return v !== ''; })) return;
+    r[0] = newId_('sg');
+    if (!r[1]) r[1] = 'pending';
+    if (!r[9]) r[9] = now_();
+    const range = sh.getRange(i + 2, 1, 1, n);
+    range.setNumberFormat('@');
+    range.setValues([r.map(function (v, k) { return cellToString_(SCHEMA.suggestions[k], v); })]);
+    fixed++;
+  });
+  return fixed;
+}
+
+const AI_HELP = [
+  'How to suggest a change to Bahr\'s tasks (for any AI that can edit this Sheet)',
+  '',
+  'Add ONE ROW to the tab "suggestions" for each change. Bahr sees it in the app and approves or rejects it. Never edit the',
+  'tasks / blocks / sessions tabs directly. Leave id, status, created_at, decided_at, result empty (filled automatically).',
+  '',
+  'Columns:',
+  '  summary  – what the change is, short Hebrew, written to Bahr (male), e.g. "להוסיף משימה: תרגיל בית 3 בסטטיסטיקה, הגשה ב-20.11"',
+  '  table    – tasks | blocks | sessions   (tasks = the task list; blocks = planned work time in the planner; sessions = time already worked)',
+  '  op       – create | update | delete',
+  '  row_id   – for update / delete: the id of the existing row (e.g. t_ab12cd). Empty for create.',
+  '  fields   – JSON object with only the columns to set, e.g. {"title":"תרגיל בית 3","course":"statistics-1","due_date":"2026-11-20","due_time":"23:59"}',
+  '  reason   – why (one short Hebrew sentence)',
+  '  by       – who suggests it (e.g. "Gemini", "Claude")',
+  '',
+  'Allowed fields:',
+  '  tasks:    title, course (a slug from the courses tab), status (todo | in_progress | done | cancelled), due_date (yyyy-mm-dd),',
+  '            due_time (HH:MM), estimate_hours (number), notes, links (one URL per line).',
+  '            create may also include "blocks": [{"start":"2026-11-10 18:00","end":"2026-11-10 19:00"}] to plan work time for it.',
+  '  blocks:   task_id, start, end ("yyyy-mm-dd HH:MM", Israel time), state (draft | planned | done | skipped), note.',
+  '  sessions: task_id, start, end, minutes (number), note.',
+  '',
+  'Rules: one change per row (several rows are fine). Dates/times are Israel time. Check the tasks tab first so you don\'t',
+  'suggest something that already exists. Don\'t suggest the same thing twice — look at pending rows in "suggestions".',
+  '',
+  'Examples (fields column):',
+  '  tasks create   {"title":"הכנה לבוחן אמצע","course":"algebraic-methods","due_date":"2026-12-13","estimate_hours":6}',
+  '  tasks update   row_id t_ab12cd   {"due_date":"2026-11-22","due_time":"12:00"}',
+  '  tasks update   row_id t_ab12cd   {"status":"done"}',
+  '  blocks create  {"task_id":"t_ab12cd","start":"2026-11-10 18:00","end":"2026-11-10 20:00","state":"planned"}',
+  '  blocks delete  row_id b_xy34zz   {}',
+];
+function writeAiHelp_() {
+  const ss = SpreadsheetApp.openById(SHEET_ID);
+  const name = 'AI – איך להציע';
+  const sh = ss.getSheetByName(name) || ss.insertSheet(name);
+  sh.clear();
+  sh.getRange(1, 1, AI_HELP.length, 1).setValues(AI_HELP.map(function (l) { return [l]; }));
+  sh.getRange(1, 1, 1, 1).setFontWeight('bold');
 }
 
 /**
@@ -380,7 +456,7 @@ function styleTab_(sh, table, n) {
   };
   if (table === 'tasks') {
     list('status', ['todo', 'in_progress', 'done', 'cancelled']);
-    list('source', ['manual', 'moodle', 'class', 'notion']);
+    list('source', ['manual', 'moodle', 'class', 'notion', 'ai']);
     const courses = SpreadsheetApp.openById(SHEET_ID).getSheetByName('courses');
     if (courses) sh.getRange(2, col('course'), rows, 1).setDataValidation(SpreadsheetApp.newDataValidation()
       .requireValueInRange(courses.getRange('A2:A50'), true).setAllowInvalid(true).build());
@@ -397,6 +473,16 @@ function styleTab_(sh, table, n) {
   if (table === 'sessions') list('kind', ['stopwatch', 'pomodoro', 'manual']);
   if (table === 'blocks') list('state', ['draft', 'planned', 'done', 'skipped']);
   if (table === 'moodle_inbox') list('status', ['new', 'accepted', 'ignored']);
+  if (table === 'suggestions') {
+    // hints only (invalid values allowed): an AI that writes "add" instead of "create" still works
+    const hint = function (name, values) {
+      sh.getRange(2, col(name), rows, 1).setDataValidation(
+        SpreadsheetApp.newDataValidation().requireValueInList(values, true).setAllowInvalid(true).build());
+    };
+    hint('status', ['pending', 'approved', 'rejected']);
+    hint('table', ['tasks', 'blocks', 'sessions']);
+    hint('op', ['create', 'update', 'delete']);
+  }
 }
 
 function findRow_(sh, keyIndex, keyValue) {

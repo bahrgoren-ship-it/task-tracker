@@ -13,6 +13,7 @@ Bahr's task tracker (homework first; may grow to all tasks): a Hebrew (RTL) inst
 | `docs/js/timer.js` | Stopwatch / pomodoro. State lives in the Sheet (`settings.active_timer`) so devices share it; focus time is saved to `sessions`. |
 | `docs/js/planner.js` | Planner: custom RTL week grid, drag tasks from the tray into work blocks (`blocks`), move/resize, tap-to-place, "אשר תכנון", busy layer from Google Calendar. No external libraries. |
 | `docs/js/notices.js` | Status strings (`ai_status`, `moodle_status`, `calendar_status`) → plain Hebrew + what to do; `noticeHtml` (original text under „פרטים”, dismissable). |
+| `docs/js/suggestions.js` | Card on the tasks screen: pending rows of the `suggestions` tab (any AI proposes, Bahr approves). Validates, shows before → after, applies through store, undo. |
 | `docs/js/inbox.js` | "הודעות" screen: full Moodle messages + the AI's suggestions (add task / update task / not needed). A message is never a task by itself. |
 | `docs/js/demo.js` | In-browser fake backend ("demo mode"). Keep its API identical to the real one. |
 | `docs/sw.js` | Service worker (offline). **Bump `VERSION` whenever anything in `docs/` changes.** |
@@ -20,6 +21,7 @@ Bahr's task tracker (homework first; may grow to all tasks): a Hebrew (RTL) inst
 | `SETUP.md` | How Bahr installs/updates the backend and connects devices. |
 
 ## Rules
+- **Want to change Bahr's tasks/plan? Don't edit the tabs: add a row to `suggestions`** (see AI-SUGGESTIONS.md).
 - UI text is Hebrew, addressed to a male user. Layout is RTL — use logical CSS properties (`inline-start`, etc.).
 - Column names in the Sheet are fixed English ids. To change columns: edit `SCHEMA` in `Code.gs` (+ `DROPPED`
   for removed ones, `DEFAULT_SETTINGS` for new settings), bump `SCHEMA_VERSION`, update `SCHEMA.md` and `demo.js`.
