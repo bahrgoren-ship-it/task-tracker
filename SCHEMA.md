@@ -139,3 +139,8 @@ Key/value pairs: `sync_deadlines_to_calendar`, `sync_blocks_to_calendar`, `defau
   A trigger runs `scheduledSync()` every 10 minutes (calendar two-way sync + Moodle check + AI review of new messages).
 - **An AI with Google Drive / Sheets access** (Gemini, Claude with the Drive connector) can read the Sheet directly.
   To change data, edit cells following the rules above, or ask Bahr to make the change in the app.
+
+## suggestions (schema 6)
+Changes proposed by any AI that can edit the Sheet; the app shows them on the tasks screen and makes the change only when Bahr approves.
+Columns: `id`, `status` (pending · approved · rejected), `summary`, `table` (tasks · blocks · sessions), `op` (create · update · delete), `row_id`, `fields` (JSON), `reason`, `by`, `created_at`, `decided_at`, `result` (id of the row made/changed).
+How an AI writes one: [AI-SUGGESTIONS.md](AI-SUGGESTIONS.md). Rows typed without id/status get them on the next app load.

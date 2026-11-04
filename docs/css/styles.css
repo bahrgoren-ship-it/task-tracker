@@ -550,3 +550,17 @@ body.has-timer .planner { height: calc(100dvh - var(--top) - 72px - 72px - env(s
   .brand { max-width: calc(50% - 125px); }
 }
 .install-steps { margin: 0; padding-inline-start: 1.3em; font-size: .9rem; display: grid; gap: 4px; }
+
+/* ---------- suggestions from any AI (tasks screen) ---------- */
+.ai-sugg { margin-top: 18px; background: var(--surface); border: 1px solid var(--line); border-inline-start: 3px solid var(--accent); border-radius: var(--radius); overflow: hidden; }
+.ai-sugg-head { width: 100%; display: flex; align-items: baseline; gap: 10px; border: 0; background: transparent; padding: 12px 14px; text-align: start; font-weight: 700; font-size: 1rem; color: var(--text); }
+.ai-sugg-head small { font-weight: 400; color: var(--muted); font-size: .8rem; }
+.ai-sugg-head svg { width: 16px; height: 16px; margin-inline-start: auto; align-self: center; transition: transform .2s; }
+.ai-sugg-head[aria-expanded="true"] svg { transform: rotate(180deg); }
+.ai-sugg ul { list-style: none; margin: 0; padding: 0 14px 12px; display: grid; gap: 12px; }
+.ai-sugg .sugg { padding-top: 12px; border-top: 1px solid var(--line); border-inline-start: 0; padding-inline-start: 0; font-size: .9rem; }
+.sg-fields { margin: 2px 0 0; padding-inline-start: 1.2em; display: grid; gap: 2px; font-size: .88rem; }
+.sg-fields s { color: var(--muted); }
+.sg-problem { margin: 0; color: var(--late); font-size: .84rem; }
+.ai-sugg .sg-fields { padding: 0; padding-inline-start: 1.2em; gap: 2px; }
+.ai-sugg .sg-fields li { padding: 0; border: 0; }

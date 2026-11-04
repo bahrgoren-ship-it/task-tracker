@@ -3,7 +3,7 @@
 
 import { todayIL, addDays, nowStampIL } from './dates.js';
 
-const LS_KEY = 'ht.demo.v6';
+const LS_KEY = 'ht.demo.v7';
 
 const COURSES = [
   ['ds-algs', 'מבני נתונים ואלגוריתמים', 'מבני נתונים', '#3B6FB6', '1349'],
@@ -13,7 +13,7 @@ const COURSES = [
   ['game-theory', 'תורת המשחקים והתנהגות כלכלית', 'תורת המשחקים', '#7B5AA6', '1393'],
 ].map(([slug, name_he, short_he, color, forum]) => ({ slug, name_he, short_he, color, active: 'TRUE', moodle_news_forum_id: forum }));
 // like the backend: a change to a row that no longer exists, without these fields, is dropped (not half-created)
-const REQUIRED = { tasks: ['title'], sessions: ['task_id', 'start'], blocks: ['task_id', 'start', 'end'], moodle_inbox: ['moodle_ref'] };
+const REQUIRED = { tasks: ['title'], sessions: ['task_id', 'start'], blocks: ['task_id', 'start', 'end'], moodle_inbox: ['moodle_ref'], suggestions: ['op'] };
 
 const dm = (d) => `${+d.slice(8)}.${+d.slice(5, 7)}`;
 
@@ -51,6 +51,15 @@ function seed() {
       { key: 'moodle_status', value: 'ok · הדגמה' }, { key: 'moodle_last_check', value: now },
       { key: 'sync_blocks_to_calendar', value: 'TRUE' }, { key: 'blocks_calendar_name', value: 'לימודים' },
       { key: 'calendar_status', value: `ok · ${now}` }],
+    suggestions: [
+      { id: 'sg_demo1', status: 'pending', summary: 'לתכנן שעתיים לתרגיל בית 1 ביום רביעי בערב', table: 'blocks', op: 'create', row_id: '',
+        fields: JSON.stringify({ task_id: 't_demo03', start: `${addDays(t, 2)} 18:00`, end: `${addDays(t, 2)} 20:00`, state: 'planned' }),
+        reason: 'ההגשה בעוד כמה ימים ואין עדיין זמן מתוכנן', by: 'Gemini', created_at: now, decided_at: '', result: '' },
+      { id: 'sg_demo2', status: 'pending', summary: 'ההגשה של תרגיל בית 2 נדחתה', table: 'tasks', op: 'update', row_id: 't_demo05',
+        fields: JSON.stringify({ due_date: addDays(t, 15), due_time: '12:00' }), reason: 'לפי ההודעה במודל', by: 'Claude', created_at: now, decided_at: '', result: '' },
+      { id: 'sg_demo3', status: 'pending', summary: 'משימה חדשה: הכנה לבוחן אמצע', table: 'tasks', op: 'create', row_id: '',
+        fields: JSON.stringify({ title: 'הכנה לבוחן אמצע', course: 'game-theory', due_date: addDays(t, 20), estimate_hours: 6 }), reason: 'בוחן ב-13.12', by: 'Gemini', created_at: now, decided_at: '', result: '' },
+    ],
     moodle_inbox: [
       { id: 'm_demo01', course: 'databases', kind: 'announcement', moodle_ref: 'post:1', posted_at: `${addDays(t, -1)} 21:04`,
         title: 'עדכונים', author: 'אפק וקנין',
@@ -106,8 +115,8 @@ export class DemoBackend {
 
   async handle(p) {
     await new Promise((r) => setTimeout(r, 150));
-    if (p.action === 'ping') return { api_version: 5, now: nowStampIL(), demo: true };
-    if (p.action === 'bootstrap') return { ...structuredClone(this.db), api_version: 5 };
+    if (p.action === 'ping') return { api_version: 6, now: nowStampIL(), demo: true };
+    if (p.action === 'bootstrap') return { suggestions: [], ...structuredClone(this.db), api_version: 6 };
     if (p.action === 'calendars') {
       return { calendars: [{ name: 'bahr.goren@gmail.com', primary: true }, { name: 'לימודים' }, { name: 'אישי' }].map((c) => ({ id: c.name, color: '#4285F4', primary: false, ...c })),
         chosen: (this.db.settings.find((r) => r.key === 'blocks_calendar_name') || {}).value || '' };
