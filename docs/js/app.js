@@ -1,9 +1,10 @@
 // Main UI: tasks screen, task editor, timer, settings. Plain JS, no build step.
 import { store } from './store.js';
-import { bucketOf, dueLabel, todayIL, addDays, shortDate, fmtMinutes, fmtClock, nowStampIL } from './dates.js';
+import { bucketOf, dueLabel, todayIL, addDays, shortDate, weekday, fmtMinutes, fmtClock } from './dates.js';
 import * as timer from './timer.js';
 import * as planner from './planner.js';
 import * as inbox from './inbox.js';
+import { aiState, aiText, moodleState, moodleText, calendarState, calendarText, noticeHtml, friendlyError, dismiss, whenLabel } from './notices.js';
 
 const SHEET_URL = 'https://docs.google.com/spreadsheets/d/10qLYln2zUiMo7dEI3xZ8pj4ncGX7TRmATZNuZfvUfWM/edit';
 
@@ -17,6 +18,13 @@ const SECTIONS = [
   ['overdue', 'באיחור'], ['today', 'היום'], ['tomorrow', 'מחר'], ['week', 'השבוע הקרוב'],
   ['later', 'בהמשך'], ['nodate', 'ללא תאריך'], ['done', 'הושלמו ובוטלו'],
 ];
+const SCREENS = { tasks: 'משימות', planner: 'תכנון', inbox: 'הודעות' };
+const ICON = {
+  play: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5v13l10-6.5-10-6.5Z"/></svg>',
+  close: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>',
+  clock: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2 2M9 2h6"/></svg>',
+  link: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></svg>',
+};
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -34,7 +42,17 @@ function boot() {
 
   store.subscribe(render);
   $('#settingsBtn').addEventListener('click', openSettings);
-  $('#syncPill').addEventListener('click', () => (store.configured ? store.refresh() : openSettings()));
+  $('#syncPill').addEventListener('click', () => {
+    if (!store.configured) return openSettings();
+    if (store.status === 'error') toast(friendlyError(store.error));
+    store.refresh();
+  });
+  // buttons inside notices (any screen): "להגדרות", and ✕ = hide this notice until the problem changes
+  document.addEventListener('click', (e) => {
+    if (e.target.closest('[data-open-settings]')) { e.preventDefault(); openSettings(); return; }
+    const x = e.target.closest('[data-dismiss]');
+    if (x) { dismiss(x.dataset.dismiss); x.closest('.notice')?.remove(); }
+  });
   $('#addBtn').addEventListener('click', () => openEditor(null));
   $('#filters').addEventListener('click', onFilterClick);
   $('#main').addEventListener('click', onMainClick);
@@ -42,9 +60,16 @@ function boot() {
   document.querySelector('.tabbar').addEventListener('click', (e) => {
     const b = e.target.closest('[data-tab]'); if (b && !b.disabled) showTab(b.dataset.tab);
   });
-  planner.initPlanner($('#planner'), { openEditor, openTimer, toast });
+  planner.initPlanner($('#planner'), { openEditor, openTimer, toast, onRender: () => renderSummary() });
   inbox.initInbox($('#inbox'), { openEditor, toast });
   showTab(store.ui('tab', 'tasks'));
+  // the "new task" button shrinks to a round button while scrolling, so it covers less of the list
+  let lastY = 0;
+  window.addEventListener('scroll', () => {
+    const y = window.scrollY;
+    $('#addBtn').classList.toggle('compact', y > 40 && y >= lastY);
+    lastY = y;
+  }, { passive: true });
   document.addEventListener('timer:phase', (e) => toast(`${e.detail.title} · ${e.detail.body}`));
   document.addEventListener('timer:stopped', (e) => toast(e.detail.minutes
     ? `נשמרו ${e.detail.minutes} דק׳ ל„${store.task(e.detail.task_id)?.title || ''}”` : 'פחות מדקה — לא נשמר זמן'));
@@ -82,9 +107,28 @@ function showTab(name) {
   $('#planner').hidden = name !== 'planner';
   $('#inbox').hidden = name !== 'inbox';
   $('#addBtn').hidden = name !== 'tasks';
+  $('#addBtn').classList.remove('compact');
+  $('#screenTitle').textContent = SCREENS[name];
   if (name === 'planner') planner.render(true);
   if (name === 'inbox') inbox.render(true);
+  renderSummary();
   window.scrollTo(0, 0);
+}
+
+// The line under the screen title: what matters on the screen you're looking at.
+function renderSummary() {
+  const tab = document.body.dataset.tab;
+  let text = '';
+  if (!store.configured) text = '';
+  else if (tab === 'planner') text = planner.summary();
+  else if (tab === 'inbox') text = inbox.summary();
+  else {
+    const open = store.data.tasks.filter((t) => t.status !== 'done' && t.status !== 'cancelled');
+    const overdue = open.filter((t) => bucketOf(t) === 'overdue').length;
+    text = open.length ? `${open.length} פתוחות${overdue ? `, ${overdue} באיחור` : ''}` : 'אין משימות פתוחות';
+  }
+  const el = $('#summary');
+  if (el.textContent !== text) el.textContent = text;
 }
 
 function render() {
@@ -92,6 +136,7 @@ function render() {
   renderTimerBar();
   planner.render();
   inbox.render();
+  renderSummary();
   const n = store.inboxNew().length;
   const badge = $('#inboxBadge');
   badge.textContent = n > 99 ? '99+' : String(n);
@@ -117,7 +162,7 @@ function renderSync() {
   if (store.isDemo) text += ' · הדגמה';
   pill.className = `sync-pill ${cls}`;
   pill.innerHTML = `<i></i>${esc(text)}`;
-  pill.title = store.error ? `שגיאה: ${store.error}` : (store.lastSync ? `סונכרן לאחרונה: ${store.lastSync}` : '');
+  pill.title = store.status === 'error' ? friendlyError(store.error) : (store.lastSync ? `סונכרן לאחרונה: ${store.lastSync}` : '');
 }
 
 function activeCourses() {
@@ -143,11 +188,6 @@ function sortKey(t) { return `${t.due_date || '9999-99-99'} ${t.due_time || '99:
 function renderTasks() {
   const main = $('#main');
   const tasks = visibleTasks();
-  const open = store.data.tasks.filter((t) => t.status !== 'done' && t.status !== 'cancelled');
-  const overdue = open.filter((t) => bucketOf(t) === 'overdue').length;
-  $('#summary').textContent = store.configured
-    ? `${open.length} פתוחות${overdue ? ` · ${overdue} באיחור` : ''}`
-    : '';
 
   if (!store.configured) {
     main.innerHTML = `<div class="empty"><p>האפליקציה עוד לא מחוברת לגיליון.</p><button class="btn primary" data-action="settings">חיבור</button></div>`;
@@ -170,18 +210,37 @@ function renderTasks() {
     if (key === 'done') {
       html += `<section class="group done-group">
         <button class="group-toggle" data-action="toggleDone" aria-expanded="${showDone}">
-          <span>${label}</span><span class="count">${list.length}</span><svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg>
+          <span class="lbl">${label}</span><span class="count">${list.length}</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
         </button>
         ${showDone ? `<ul class="cards">${list.map(card).join('')}</ul>` : ''}
       </section>`;
     } else {
-      html += `<section class="group g-${key}"><h2><span>${label}</span><span class="count">${list.length}</span></h2>
+      html += `<section class="group g-${key}"><h2><span class="lbl">${label}</span>${groupDate(key)}<span class="count">${list.length}</span></h2>
         <ul class="cards">${list.map(card).join('')}</ul></section>`;
     }
   }
-  if (!html) html = `<div class="empty"><p>אין משימות כאן.</p></div>`;
+  if (!html) html = `<div class="empty"><p>${store.ui('course', 'all') === 'all' ? 'עוד אין משימות.' : 'אין משימות בקורס הזה.'}</p><button class="btn primary" data-action="new">משימה חדשה</button></div>`;
   else if (!tasks.some((t) => bucketOf(t) !== 'done')) html = `<div class="empty small"><p>אין משימות פתוחות 🎉</p></div>` + html;
   main.innerHTML = html;
+}
+
+// "היום" and "מחר" headings also show the actual day, like a diary page.
+const DAY_NAMES = ['ראשון', 'שני', 'שלישי', 'רביעי', 'חמישי', 'שישי', 'שבת'];
+function groupDate(key) {
+  const d = key === 'today' ? todayIL() : key === 'tomorrow' ? addDays(todayIL(), 1) : '';
+  return d ? `<span class="date">${DAY_NAMES[new Date(`${d}T12:00:00Z`).getUTCDay()]} ${shortDate(d)}</span>` : '';
+}
+
+// The deadline shown at the end of a task's first line. The group heading already says the day for
+// today / tomorrow, so there only the hour is shown.
+function dueHtml(t, bucket) {
+  if (!t.due_date) return '';
+  let day = '';
+  if (bucket === 'overdue') day = dueLabel(t.due_date, '');
+  else if (bucket === 'week') day = `${weekday(t.due_date)} ${shortDate(t.due_date)}`;
+  else if (bucket === 'later' || bucket === 'done') day = shortDate(t.due_date);
+  if (!day && !t.due_time) return '';
+  return `<span class="due ${bucket === 'overdue' ? 'late' : ''}" title="${esc(dueLabel(t.due_date, t.due_time))}">${day ? `<span>${esc(day)}</span>` : ''}${t.due_time ? `<b>${esc(t.due_time)}</b>` : ''}</span>`;
 }
 
 function card(t) {
@@ -189,32 +248,29 @@ function card(t) {
   const bucket = bucketOf(t);
   const links = (t.links || '').split('\n').filter((x) => x.trim()).length;
   const meta = [];
-  if (c) meta.push(`<span class="course" style="--c:${esc(c.color)}"><i></i>${esc(c.short_he || c.name_he)}</span>`);
-  if (t.due_date) {
-    const label = bucket === 'done' ? `${shortDate(t.due_date)}${t.due_time ? ` · ${t.due_time}` : ''}` : dueLabel(t.due_date, t.due_time);
-    meta.push(`<span class="due ${bucket === 'overdue' ? 'late' : ''}">${esc(label)}</span>`);
-  }
+  if (c) meta.push(`<span class="course"><i></i>${esc(c.short_he || c.name_he)}</span>`);
+  if (t.status === 'in_progress') meta.push(`<span class="state">בתהליך</span>`);
+  if (t.status === 'cancelled') meta.push(`<span class="state">בוטל</span>`);
   const spent = store.spentMinutes(t.id);
   const est = Number(t.estimate_hours) || 0;
   if (spent || est) {
     const over = est && spent > est * 60;
-    meta.push(`<span class="time ${over ? 'over' : ''}" title="זמן בפועל / הערכה"><svg viewBox="0 0 24 24"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2 2M9 2h6"/></svg>${spent ? fmtMinutes(spent) : '0:00'}${est ? ` / ${fmtMinutes(est * 60)}` : ''}</span>`);
+    const pct = est ? Math.min(100, Math.round((spent / (est * 60)) * 100)) : 0;
+    meta.push(`<span class="time ${over ? 'over' : ''}" title="זמן בפועל מתוך ההערכה">${est ? `<b class="bar"><i style="width:${pct}%"></i></b>` : ICON.clock}<span>${spent ? fmtMinutes(spent) : '0:00'}${est ? ` / ${fmtMinutes(est * 60)}` : ''}</span></span>`);
   }
-  if (links) meta.push(`<span class="links" title="קישורים"><svg viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></svg>${links}</span>`);
-  if (t.status === 'in_progress') meta.push(`<span class="state">בתהליך</span>`);
-  if (t.status === 'cancelled') meta.push(`<span class="state">בוטל</span>`);
+  if (links) meta.push(`<span class="links" title="קישורים">${ICON.link}${links}</span>`);
   const active = timer.state();
   const running = active && active.task_id === t.id;
   const open = t.status !== 'done' && t.status !== 'cancelled';
   return `<li class="card s-${esc(t.status)} ${running ? 'timing' : ''}" data-id="${esc(t.id)}" style="--c:${esc(c ? c.color : '#8A8F98')}">
     <button class="status" data-action="cycle" aria-label="סטטוס: ${esc(STATUS[t.status]?.label || t.status)} — הקש לשינוי"><span></span></button>
     <div class="body" data-action="edit">
-      <div class="title">${esc(t.title)}</div>
-      <div class="meta">${meta.join('')}</div>
+      <div class="line1"><span class="title">${esc(t.title)}</span>${dueHtml(t, bucket)}</div>
+      ${meta.length ? `<div class="meta">${meta.join('')}</div>` : ''}
       ${t.notes ? `<div class="notes">${esc(t.notes)}</div>` : ''}
     </div>
-    ${open || running ? `<button class="play" data-action="timer" aria-label="${running ? 'טיימר פעיל' : 'התחל טיימר'}">
-      ${running ? '<span class="live"></span>' : '<svg viewBox="0 0 24 24"><path d="M8 5.5v13l10-6.5-10-6.5Z"/></svg>'}</button>` : ''}
+    ${open || running ? `<button class="play" data-action="timer" aria-label="${running ? 'טיימר פעיל — פתח' : 'התחל טיימר'}">
+      ${running ? '<span class="live"></span>' : ICON.play}</button>` : '<span class="play-gap"></span>'}
   </li>`;
 }
 
@@ -232,6 +288,7 @@ function onMainClick(e) {
   if (!el) return;
   const action = el.dataset.action;
   if (action === 'settings') return openSettings();
+  if (action === 'new') return openEditor(null);
   if (action === 'toggleDone') { store.setUi('showDone', !store.ui('showDone', false)); return render(); }
   const id = el.closest('[data-id]')?.dataset.id;
   if (!id) return;
@@ -258,12 +315,12 @@ function openEditor(id, opts = {}) {
   const courses = activeCourses();
   dlg.innerHTML = `<form method="dialog" class="sheet-form" novalidate>
     <header class="sheet-head">
-      <h2>${id ? 'עריכת משימה' : 'משימה חדשה'}</h2>
-      <button type="button" class="icon-btn" data-close aria-label="סגור"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+      <h2 ${id ? 'tabindex="-1" autofocus' : ''}>${id ? 'עריכת משימה' : 'משימה חדשה'}</h2>
+      <button type="button" class="icon-btn" data-close aria-label="סגור">${ICON.close}</button>
     </header>
     <div class="sheet-body">
       <label class="field"><span>שם המשימה</span>
-        <input name="title" required autocomplete="off" value="${esc(t.title)}" placeholder="למשל: תרגיל בית 2"></label>
+        <input name="title" required autocomplete="off" value="${esc(t.title)}" placeholder="למשל: תרגיל בית 2" ${id ? '' : 'autofocus'}></label>
 
       <fieldset class="field"><legend>קורס</legend>
         <div class="chips wrap">
@@ -294,12 +351,12 @@ function openEditor(id, opts = {}) {
         </div>
         <div class="progress" id="spentBar"><i></i></div>
         ${id ? `<div class="sessions" id="sessionsBox"></div>
-        <div class="row add-time">
-          <label class="field"><span>הוספת זמן ידנית (דק׳)</span><input type="number" name="add_minutes" min="1" step="5" inputmode="numeric" placeholder="למשל 45"></label>
-          <label class="field"><span>תאריך</span><input type="date" name="add_date" value="${today}"></label>
+        <div class="add-time">
+          <label class="field"><span>הוספת דקות</span><input type="number" name="add_minutes" min="1" step="5" inputmode="numeric" placeholder="45"></label>
+          <label class="field"><span>בתאריך</span><input type="date" name="add_date" value="${today}"></label>
           <button type="button" class="btn ghost" data-addtime>הוסף</button>
         </div>
-        <button type="button" class="btn ghost play-wide" data-starttimer><svg viewBox="0 0 24 24"><path d="M8 5.5v13l10-6.5-10-6.5Z"/></svg>התחל טיימר</button>` : ''}
+        <button type="button" class="btn ghost play-wide" data-starttimer>${ICON.play}התחל טיימר</button>` : ''}
       </section>
 
       <label class="field"><span>הערות / הנחיות</span><textarea name="notes" rows="3">${esc(t.notes)}</textarea></label>
@@ -384,7 +441,6 @@ function openEditor(id, opts = {}) {
   $('[data-starttimer]', dlg)?.addEventListener('click', () => { dlg.close(); openTimer(id); });
 
   dlg.showModal();
-  if (!id) setTimeout(() => form.title.focus(), 50);
 }
 
 function linkList(links) {
@@ -398,6 +454,49 @@ function prettyUrl(u) {
 
 /* -------------------------------------------------------- settings ---- */
 
+// A status line in settings: what it means, and the original text under "פרטים" when something is wrong.
+function statusLine(st, text, extra) {
+  if (st.kind === 'error' || st.kind === 'waiting' || st.kind === 'off' || (st.kind === 'ok' && st.drive)) {
+    return noticeHtml({ tone: st.kind === 'error' ? 'err' : st.kind === 'off' ? 'warn' : 'info', title: text.title,
+      body: [text.body, extra].filter(Boolean).join(' '), tech: st.tech || '' });
+  }
+  return `<p class="hint small">✓ ${esc(text.title)}${text.body ? ` · ${esc(text.body)}` : ''}${extra ? ` · ${esc(extra)}` : ''}</p>`;
+}
+
+function calendarSettingsHtml() {
+  if (store.apiVersion && store.apiVersion < 5) {
+    return `<p class="hint small">כדי לבחור לאיזה יומן נכנסים הבלוקים צריך לעדכן את השרת (Apps Script) — ראה SETUP.md.</p>
+      <label class="check"><input type="checkbox" data-set="sync_blocks_to_calendar" ${store.setting('sync_blocks_to_calendar') === 'TRUE' ? 'checked' : ''}> בלוקי עבודה מאושרים ביומן „משימות – בלוקי עבודה”</label>
+      <label class="check"><input type="checkbox" data-set="sync_deadlines_to_calendar" ${store.setting('sync_deadlines_to_calendar') === 'TRUE' ? 'checked' : ''}> תאריכי הגשה ביומן „משימות – הגשות”</label>`;
+  }
+  const on = store.setting('sync_blocks_to_calendar') === 'TRUE';
+  const name = store.setting('blocks_calendar_name', 'לימודים');
+  const st = calendarState();
+  return `<label class="check"><input type="checkbox" data-set="sync_blocks_to_calendar" ${on ? 'checked' : ''}> בלוקי עבודה מאושרים נכנסים ליומן Google</label>
+    <label class="field"><span>לאיזה יומן</span>
+      <select data-set="blocks_calendar_name" id="calPick" ${on ? '' : 'disabled'}>
+        <option value="${esc(name)}" selected>${esc(name || 'יומן נפרד: משימות – בלוקי עבודה')}</option>
+      </select></label>
+    <p class="hint small">אחרי „אשר תכנון” הבלוקים מופיעים ביומן. הזזה או מחיקה של האירוע ביומן מעדכנת את האפליקציה.</p>
+    <label class="check"><input type="checkbox" data-set="sync_deadlines_to_calendar" ${store.setting('sync_deadlines_to_calendar') === 'TRUE' ? 'checked' : ''}> תאריכי הגשה ביומן נפרד „משימות – הגשות”</label>
+    ${st.kind === 'error' ? noticeHtml({ tone: 'err', ...calendarText(st), action: '', tech: st.tech })
+      : st.kind === 'ok' && st.at ? `<p class="hint small">✓ סונכרן לאחרונה ${esc(whenLabel(st.at))}</p>` : ''}`;
+}
+
+/** Fills the "which calendar" list with Bahr's own calendars (asked from the backend). */
+async function loadCalendarChoices(dlg) {
+  const sel = $('#calPick', dlg);
+  if (!sel || !store.configured || store.apiVersion < 5) return;
+  try {
+    const r = await store.action('calendars');
+    const chosen = store.setting('blocks_calendar_name', '');
+    const names = (r.calendars || []).map((c) => ({ value: c.name, label: c.primary ? `${c.name} (היומן הראשי)` : c.name }));
+    if (chosen && !names.some((n) => n.value === chosen)) names.unshift({ value: chosen, label: `${chosen} (לא נמצא)` });
+    names.push({ value: '', label: 'יומן נפרד: משימות – בלוקי עבודה' });
+    sel.innerHTML = names.map((n) => `<option value="${esc(n.value)}" ${n.value === chosen ? 'selected' : ''}>${esc(n.label)}</option>`).join('');
+  } catch { /* keep the current name only */ }
+}
+
 function openSettings() {
   const dlg = $('#settings');
   const cfg = store.cfg || { url: '', key: '' };
@@ -405,8 +504,8 @@ function openSettings() {
     ? `${location.origin}${location.pathname}?api=${encodeURIComponent(cfg.url)}&key=${encodeURIComponent(cfg.key)}` : '';
   dlg.innerHTML = `<form method="dialog" class="sheet-form">
     <header class="sheet-head">
-      <h2>חיבור והגדרות</h2>
-      <button type="button" class="icon-btn" data-close aria-label="סגור"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+      <h2 tabindex="-1" autofocus>חיבור והגדרות</h2>
+      <button type="button" class="icon-btn" data-close aria-label="סגור">${ICON.close}</button>
     </header>
     <div class="sheet-body">
       <p class="hint">האפליקציה שומרת את הנתונים בגיליון Google שלך. כדי לחבר מכשיר, הדבק את כתובת השרת (Web app URL) ואת המפתח שקיבלת בהתקנה — או פתח במכשיר את קישור ההגדרה.</p>
@@ -422,19 +521,16 @@ function openSettings() {
           <div><dt>מצב</dt><dd>${store.isDemo ? 'הדגמה (נתונים רק במכשיר הזה)' : 'מחובר לגיליון'}</dd></div>
           <div><dt>סנכרון אחרון</dt><dd>${esc(store.lastSync || '—')}</dd></div>
           <div><dt>שינויים שממתינים לשליחה</dt><dd>${store.queue.length}</dd></div>
-          ${store.error ? `<div><dt>שגיאה אחרונה</dt><dd dir="ltr">${esc(store.error)}</dd></div>` : ''}
         </dl>
+        ${store.status === 'error' ? noticeHtml({ tone: 'err', title: friendlyError(store.error), tech: store.error }) : ''}
         ${deviceLink ? `<button type="button" class="btn ghost" data-copy>העתק קישור הגדרה למכשיר נוסף</button>
           <p class="hint small">פתח את הקישור בטלפון / באייפד והמכשיר יתחבר. הקישור מכיל את המפתח — אל תשתף אותו.</p>` : ''}
         <hr>
         <h3 class="sub-h">יומן Google</h3>
-        ${store.apiVersion && store.apiVersion < 3 ? '<p class="hint small">כדי להפעיל צריך קודם לעדכן את השרת (Apps Script) — ראה SETUP.md.</p>' : ''}
-        <label class="check"><input type="checkbox" data-set="sync_deadlines_to_calendar" ${store.setting('sync_deadlines_to_calendar') === 'TRUE' ? 'checked' : ''}> להציג תאריכי הגשה ביומן „משימות – הגשות”</label>
-        <label class="check"><input type="checkbox" data-set="sync_blocks_to_calendar" ${store.setting('sync_blocks_to_calendar') === 'TRUE' ? 'checked' : ''}> להציג בלוקי עבודה מאושרים ביומן „משימות – בלוקי עבודה” (דו-כיווני)</label>
-        <p class="hint small">סנכרון אחרון: ${esc(store.setting('calendar_last_sync') || '—')}</p>
+        ${calendarSettingsHtml()}
         <hr>
         <h3 class="sub-h">מודל</h3>
-        <p class="hint small">מצב: <span dir="auto">${esc(store.setting('moodle_status') || 'לא מחובר')}</span>${store.setting('moodle_last_check') ? ` · נבדק ${esc(store.setting('moodle_last_check'))}` : ''}</p>
+        ${statusLine(moodleState(), moodleText(moodleState()), store.setting('moodle_last_check') ? `נבדק ${whenLabel(store.setting('moodle_last_check'))}` : '')}
         <div class="row wrap">
           <label class="field grow"><span>Moodle token</span><input name="moodle_token" dir="ltr" autocomplete="off" placeholder="מתוך config.json → token"></label>
           <button type="button" class="btn ghost" data-moodle>חבר</button>
@@ -443,12 +539,12 @@ function openSettings() {
         <hr>
         <h3 class="sub-h">AI להודעות ממודל</h3>
         <p class="hint small">Gemini קורא כל הודעה ממודל ומציע משימה רק כשיש בה משהו לעשות שעוד לא קיים במשימות שלך.</p>
-        <p class="hint small">מצב: <span dir="auto">${esc(store.setting('ai_status') || 'לא מחובר')}</span></p>
+        ${statusLine(aiState(), aiText(aiState()), '')}
         <div class="row wrap">
           <label class="field grow"><span>מפתח Gemini API</span><input name="gemini_key" dir="ltr" autocomplete="off" placeholder="AIza…"></label>
           <button type="button" class="btn ghost" data-gemini>חבר</button>
         </div>
-        <p class="hint small">מפתח בחינם: <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a> → Create API key. נשמר רק בשרת שלך (Script Properties). המודל נבחר אוטומטית (Gemini Flash העדכני); אפשר לקבוע אחר בגיליון: settings → ai_model.</p>
+        <p class="hint small">מפתח בחינם: <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a> → Create API key. נשמר רק בשרת שלך (Script Properties). כדי לא לחרוג מהמכסה החינמית, ה-AI קורא כמה הודעות בבקשה אחת ומתחיל ב-Gemini Flash-Lite; כשמודל עמוס או נגמרה לו המכסה הוא עובר למודל אחר או מחכה. אפשר לקבוע מודל ראשון בגיליון: settings → ai_model.</p>
         <hr>
         <h3 class="sub-h">פומודורו</h3>
         <div class="row wrap pomo">
@@ -494,10 +590,16 @@ function openSettings() {
     catch { prompt('העתק את הקישור:', deviceLink); }
   });
   dlg.querySelectorAll('[data-set]').forEach((inp) => inp.addEventListener('change', () => {
-    const v = inp.type === 'checkbox' ? (inp.checked ? 'TRUE' : 'FALSE') : String(Math.max(1, Math.round(Number(inp.value) || 1)));
+    const v = inp.type === 'checkbox' ? (inp.checked ? 'TRUE' : 'FALSE')
+      : inp.tagName === 'SELECT' ? inp.value : String(Math.max(1, Math.round(Number(inp.value) || 1)));
     store.setSetting(inp.dataset.set, v);
-    toast(/calendar/.test(inp.dataset.set) && v === 'TRUE' ? 'נשמר — היומן יתעדכן בעוד רגע' : 'נשמר');
+    if (inp.dataset.set === 'sync_blocks_to_calendar' && $('#calPick', dlg)) $('#calPick', dlg).disabled = !inp.checked;
+    const cal = /calendar/.test(inp.dataset.set);
+    if (inp.dataset.set === 'blocks_calendar_name') toast(`נשמר — הבלוקים המאושרים יעברו ליומן „${v || 'משימות – בלוקי עבודה'}”`);
+    else toast(cal && v === 'TRUE' ? 'נשמר — היומן יתעדכן בעוד רגע' : 'נשמר');
+    if (cal) store.refresh(); // the backend syncs the calendar with this save; show the result
   }));
+  loadCalendarChoices(dlg);
   $('[data-moodle]', dlg)?.addEventListener('click', async () => {
     const token = form.moodle_token.value.trim();
     if (!token) { form.moodle_token.focus(); return; }
@@ -510,7 +612,7 @@ function openSettings() {
       const c = await store.action('moodleCheck');
       toast(c.added ? `נמצאו ${c.added} הודעות/מטלות במודל` : 'מודל מחובר, אין חדש');
       store.refresh();
-    } catch (err) { toast(`לא הצלחתי להתחבר למודל: ${err.message}`); }
+    } catch (err) { toast(/invalidtoken|token/i.test(err.message) ? 'ה-token לא עבד — בדוק שהעתקת את כולו' : friendlyError(err.message)); }
   });
   $('[data-gemini]', dlg)?.addEventListener('click', async () => {
     const key = form.gemini_key.value.trim();
@@ -523,9 +625,10 @@ function openSettings() {
       toast(`ה-AI מחובר (${r.model}) — עובר על ההודעות…`);
       await store.refresh();
       const a = await store.action('aiReview');
-      toast(a.reviewed ? `ה-AI עבר על ${a.reviewed} הודעות` : `AI: ${a.status}`);
-      store.refresh();
-    } catch (err) { toast(`המפתח לא עבד: ${err.message}`); }
+      await store.refresh();
+      const as = aiState();
+      toast(a.reviewed ? `ה-AI עבר על ${a.reviewed} הודעות` : as.kind === 'ok' ? 'אין הודעות שמחכות ל-AI' : aiText(as).title);
+    } catch (err) { toast(/Gemini|API key/i.test(err.message) ? 'המפתח לא עבד — בדוק שהעתקת את כולו' : friendlyError(err.message)); }
   });
   $('[data-logout]', dlg)?.addEventListener('click', () => {
     if (store.queue.length && !confirm('יש שינויים שעוד לא נשלחו. לנתק בכל זאת?')) return;
@@ -582,7 +685,7 @@ function renderTimerBar() {
   bar.innerHTML = `
     <button class="tb-main" data-t="open">
       <span class="clock">${v.clock}</span>
-      <span class="tb-text"><b>${esc(t ? t.title : 'משימה')}</b><small>${esc(st.mode === 'pomodoro' ? `🍅 ${v.label}` : `⏱ ${v.label}`)}</small></span>
+      <span class="tb-text"><b dir="auto">${esc(t ? t.title : 'משימה')}</b><small>${esc(st.mode === 'pomodoro' ? `🍅 ${v.label}` : `⏱ ${v.label}`)}</small></span>
     </button>
     <button class="icon-btn" data-t="${st.running ? 'pause' : 'resume'}" aria-label="${st.running ? 'השהה' : 'המשך'}">
       ${st.running ? '<svg viewBox="0 0 24 24"><path d="M8 5v14M16 5v14"/></svg>' : '<svg viewBox="0 0 24 24"><path d="M8 5.5v13l10-6.5-10-6.5Z"/></svg>'}</button>
@@ -629,8 +732,8 @@ function renderTimerSheet() {
   const spent = store.spentMinutes(id);
   const est = Number(t.estimate_hours) || 0;
   const head = `<header class="sheet-head">
-      <div><h2>${esc(t.title)}</h2>${c ? `<p class="sub"><i style="--c:${esc(c.color)}"></i>${esc(c.short_he || c.name_he)}</p>` : ''}</div>
-      <button type="button" class="icon-btn" data-close aria-label="סגור"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+      <div><h2 tabindex="-1" autofocus>${esc(t.title)}</h2>${c ? `<p class="sub"><i style="--c:${esc(c.color)}"></i>${esc(c.short_he || c.name_he)}</p>` : ''}</div>
+      <button type="button" class="icon-btn" data-close aria-label="סגור">${ICON.close}</button>
     </header>`;
   const totals = `<p class="totals">סה״כ במשימה: <b>${fmtMinutes(spent)}</b> ש׳${est ? ` מתוך ${fmtMinutes(est * 60)}` : ''}</p>`;
   let body;
@@ -646,15 +749,17 @@ function renderTimerSheet() {
     const pom = st.mode === 'pomodoro';
     const dots = pom ? `<div class="dots">${Array.from({ length: p.every }, (_, i) => `<i class="${i < st.cycle % p.every || (st.cycle && st.cycle % p.every === 0 && st.phase === 'long') ? 'on' : ''}"></i>`).join('')}</div>` : '';
     const waiting = !st.running && st.acc === 0;
-    body = `<div class="ring-wrap ${timer.isBreak(st) ? 'break' : ''}" style="--c:${esc(c ? c.color : '#2F5BD3')}">
+    body = `<div class="ring-wrap ${timer.isBreak(st) ? 'break' : ''}" style="--c:${esc(c ? c.color : 'var(--accent)')}">
         ${pom ? `<svg class="ring" viewBox="0 0 200 200"><circle class="ring-bg" cx="100" cy="100" r="90"/><circle class="ring-fg" cx="100" cy="100" r="90" style="stroke-dashoffset:${565.5 * (1 - v.progress)}"/></svg>` : ''}
         <div class="ring-center"><div class="big-clock">${v.clock}</div><div class="phase-label">${esc(v.label)}</div>${dots}</div>
       </div>
       ${totals}
       <div class="timer-actions">
         <button type="button" class="btn primary big" data-ta="${st.running ? 'pause' : 'resume'}">${st.running ? 'השהה' : waiting ? (st.phase === 'focus' ? 'התחל ריכוז' : 'התחל הפסקה') : 'המשך'}</button>
-        ${pom ? `<button type="button" class="btn ghost" data-ta="skip">${st.phase === 'focus' ? 'סיים ריכוז עכשיו' : 'דלג על ההפסקה'}</button>` : ''}
-        <button type="button" class="btn ghost" data-ta="stop">עצור ושמור</button>
+        <div class="pair">
+          ${pom ? `<button type="button" class="btn ghost" data-ta="skip">${st.phase === 'focus' ? 'סיים ריכוז עכשיו' : 'דלג על ההפסקה'}</button>` : ''}
+          <button type="button" class="btn ghost" data-ta="stop">עצור ושמור</button>
+        </div>
         <button type="button" class="btn ghost ok" data-ta="done">✓ סיימתי את המשימה</button>
       </div>`;
   }

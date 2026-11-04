@@ -3,15 +3,17 @@
 
 import { todayIL, addDays, nowStampIL } from './dates.js';
 
-const LS_KEY = 'ht.demo.v4';
+const LS_KEY = 'ht.demo.v6';
 
 const COURSES = [
-  ['ds-algs', 'מבני נתונים ואלגוריתמים', 'מבני נתונים', '#3B6FB6'],
-  ['databases', 'ניהול מסדי נתונים', 'מסדי נתונים', '#C8742B'],
-  ['statistics-1', 'סטטיסטיקה 1', 'סטטיסטיקה 1', '#3F8F5B'],
-  ['algebraic-methods', 'שיטות אלגבריות בהנדסת נתונים', 'שיטות אלגבריות', '#8B5E3C'],
-  ['game-theory', 'תורת המשחקים והתנהגות כלכלית', 'תורת המשחקים', '#7B5AA6'],
-].map(([slug, name_he, short_he, color]) => ({ slug, name_he, short_he, color, active: 'TRUE' }));
+  ['ds-algs', 'מבני נתונים ואלגוריתמים', 'מבני נתונים', '#3B6FB6', '1349'],
+  ['databases', 'ניהול מסדי נתונים', 'מסדי נתונים', '#C8742B', '1350'],
+  ['statistics-1', 'סטטיסטיקה 1', 'סטטיסטיקה 1', '#3F8F5B', '1360'],
+  ['algebraic-methods', 'שיטות אלגבריות בהנדסת נתונים', 'שיטות אלגבריות', '#8B5E3C', '1377'],
+  ['game-theory', 'תורת המשחקים והתנהגות כלכלית', 'תורת המשחקים', '#7B5AA6', '1393'],
+].map(([slug, name_he, short_he, color, forum]) => ({ slug, name_he, short_he, color, active: 'TRUE', moodle_news_forum_id: forum }));
+// like the backend: a change to a row that no longer exists, without these fields, is dropped (not half-created)
+const REQUIRED = { tasks: ['title'], sessions: ['task_id', 'start'], blocks: ['task_id', 'start', 'end'], moodle_inbox: ['moodle_ref'] };
 
 const dm = (d) => `${+d.slice(8)}.${+d.slice(5, 7)}`;
 
@@ -33,6 +35,8 @@ function seed() {
       task('t_demo05', 'תרגיל בית 2', 'algebraic-methods', 'todo', 12, { links: 'https://moodle26.technion.ac.il' }),
       task('t_demo06', 'לקרוא פרק 2 בספר', 'game-theory', 'todo', null),
       task('t_demo07', 'רענון פייתון', 'databases', 'done', -1),
+      task('t_demo08', 'סיכום הרצאה 3', 'statistics-1', 'todo', 0),
+      task('t_demo09', 'קריאה: עצים מאוזנים', 'ds-algs', 'todo', 3, { estimate_hours: '1.5', due_time: '12:00' }),
     ],
     sessions: [
       { id: 's_demo01', task_id: 't_demo02', start: `${addDays(t, -1)} 20:00`, end: `${addDays(t, -1)} 20:50`,
@@ -43,7 +47,10 @@ function seed() {
       { id: 'b_demo02', task_id: 't_demo04', start: `${t} 18:00`, end: `${t} 19:00`, state: 'draft', sync_calendar: '', calendar_event_id: '', note: '', updated_at: now },
     ],
     courses: COURSES,
-    settings: [{ key: 'default_block_minutes', value: '60' }, { key: 'ai_status', value: 'connected · הדגמה' }],
+    settings: [{ key: 'default_block_minutes', value: '60' }, { key: 'ai_status', value: `ok · 3 reviewed · ${now} · gemini-flash-lite (הדגמה)` },
+      { key: 'moodle_status', value: 'ok · הדגמה' }, { key: 'moodle_last_check', value: now },
+      { key: 'sync_blocks_to_calendar', value: 'TRUE' }, { key: 'blocks_calendar_name', value: 'לימודים' },
+      { key: 'calendar_status', value: `ok · ${now}` }],
     moodle_inbox: [
       { id: 'm_demo01', course: 'databases', kind: 'announcement', moodle_ref: 'post:1', posted_at: `${addDays(t, -1)} 21:04`,
         title: 'עדכונים', author: 'אפק וקנין',
@@ -67,6 +74,11 @@ function seed() {
         title: 'ביטול התרגול מחר', author: 'יהושע רוס', text: 'התרגול של מחר בשעה 10:30 מבוטל. החומר יועבר בתרגול הבא.',
         detected_dates: '', url: 'https://moodle26.technion.ac.il', status: 'new', task_id: '',
         ai_status: 'done', ai_summary: 'התרגול של מחר מבוטל; החומר יועבר בתרגול הבא.', ai_checked_at: now, ai_suggestions: '[]' },
+      { id: 'm_demo05', course: 'game-theory', kind: 'announcement', moodle_ref: 'post:file930', posted_at: addDays(t, -3),
+        title: 'ברוכים הבאים', author: 'בר מולר',
+        text: 'שלום לכולם, וברוכים הבאים לקורס!\n\nבאתר הקורס תוכלו למצוא את הסילבוס המעודכן לסמסטר הקרוב. מומלץ לקרוא אותו\nבעיון.\n\n**מספר הודעות חשובות:**\n\n  1. **תרגול 0:** פורסם באתר הקורס תרגול 0. חשוב לעבור עליו **לפני ההרצאה\nהראשונה**.\n\n  2. **בוחן אמצע:** יתקיים ב-**13.12**, משקלו 20% (מגן).\n\n  * **ימי ראשון 12:30-14:30** \\- בהנחייתי.\n  * **ימי שלישי 11:30-13:30** \\- בהנחיית גילעד.\n\nהסילבוס: https://moodle26.technion.ac.il/course/view.php?id=575',
+        detected_dates: '', url: 'https://drive.google.com/drive/folders/demo', status: 'new', task_id: '',
+        ai_status: '', ai_summary: '', ai_suggestions: '', ai_checked_at: '' },
       { id: 'm_demo04', course: 'statistics-1', kind: 'assignment', moodle_ref: 'assign:1', posted_at: `${t} 08:00`,
         title: 'תרגיל בית 2', author: '', text: 'הגשה ביחידים, קובץ PDF אחד.', detected_dates: `${addDays(t, 6)} 23:59`,
         url: 'https://moodle26.technion.ac.il', status: 'new', task_id: '', ai_status: '', ai_summary: '', ai_suggestions: '', ai_checked_at: '' },
@@ -94,11 +106,20 @@ export class DemoBackend {
 
   async handle(p) {
     await new Promise((r) => setTimeout(r, 150));
-    if (p.action === 'ping') return { api_version: 4, now: nowStampIL(), demo: true };
-    if (p.action === 'bootstrap') return { ...structuredClone(this.db), api_version: 4 };
+    if (p.action === 'ping') return { api_version: 5, now: nowStampIL(), demo: true };
+    if (p.action === 'bootstrap') return { ...structuredClone(this.db), api_version: 5 };
+    if (p.action === 'calendars') {
+      return { calendars: [{ name: 'bahr.goren@gmail.com', primary: true }, { name: 'לימודים' }, { name: 'אישי' }].map((c) => ({ id: c.name, color: '#4285F4', primary: false, ...c })),
+        chosen: (this.db.settings.find((r) => r.key === 'blocks_calendar_name') || {}).value || '' };
+    }
     if (p.action === 'busy') return demoBusy(p.from, p.to);
     if (p.action === 'syncNow') return { calendar: { pulled: 0, pushed: 0 } };
-    if (p.action === 'moodleCheck') return { status: 'ok · 0 new (הדגמה)', added: 0 };
+    if (p.action === 'moodleCheck') {
+      const row = this.db.settings.find((r) => r.key === 'moodle_last_check');
+      if (row) row.value = nowStampIL(); else this.db.settings.push({ key: 'moodle_last_check', value: nowStampIL() });
+      this.save();
+      return { status: 'ok · 0 new (הדגמה)', added: 0 };
+    }
     if (p.action === 'setMoodleToken') return { connected: true, fullname: 'הדגמה' };
     if (p.action === 'setGeminiKey') return { connected: true, model: 'הדגמה' };
     if (p.action === 'aiReview') { // fake review: one suggested task per waiting message
@@ -113,14 +134,16 @@ export class DemoBackend {
         reviewed++;
       }
       this.save();
-      return { status: `ok · ${reviewed} reviewed`, reviewed };
+      return { status: `ok · ${reviewed} reviewed · ${nowStampIL()} · הדגמה`, reviewed };
     }
     if (p.action === 'batch') {
+      const results = [];
       for (const o of p.ops) {
         const k = o.table === 'settings' ? 'key' : 'id';
         const list = this.db[o.table];
         if (o.op === 'upsert') {
           const i = list.findIndex((r) => r[k] === o.row[k]);
+          if (i < 0 && (REQUIRED[o.table] || []).some((c) => !o.row[c])) { results.push({ table: o.table, deleted: o.row[k] }); continue; }
           if (i >= 0) list[i] = { ...list[i], ...o.row }; else list.push({ ...o.row });
         } else if (o.op === 'delete') {
           this.db[o.table] = list.filter((r) => r[k] !== o.id);
@@ -135,8 +158,15 @@ export class DemoBackend {
         const m = this.db.sessions.filter((x) => x.task_id === task.id).reduce((a, x) => a + Number(x.minutes || 0), 0);
         task.spent_hours = m ? String(Math.round(m / 60 * 100) / 100) : '';
       }
+      // like the real backend: confirmed blocks get a (pretend) Google Calendar event
+      const syncOn = (this.db.settings.find((r) => r.key === 'sync_blocks_to_calendar') || {}).value === 'TRUE';
+      for (const b of this.db.blocks) {
+        const want = syncOn && (b.state === 'planned' || b.state === 'done') && b.sync_calendar !== 'FALSE';
+        const id = want ? (b.calendar_event_id || `demo-ev-${b.id}`) : '';
+        if (id !== (b.calendar_event_id || '')) { b.calendar_event_id = id; results.push({ table: 'blocks', row: { ...b } }); }
+      }
       this.save();
-      return { results: [], now: nowStampIL() };
+      return { results, now: nowStampIL() };
     }
     throw new Error('unknown action');
   }

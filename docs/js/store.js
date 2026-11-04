@@ -118,20 +118,44 @@ class Store {
     return this._refreshing;
   }
 
+  // Sends the queue as one batch. Only one batch is on its way at a time: a change made meanwhile waits and goes in
+  // the next batch (sending the same changes twice, in parallel, could bring back something already deleted).
   async flush(throwOnError = false) {
+    while (this._flushing) { try { await this._flushing; } catch { /* its own caller reports it */ } }
     if (!this.configured || !this.queue.length) return;
     const ops = this.queue.slice();
+    const run = this._flushing = this.call({ action: 'batch', ops });
+    this.status = 'syncing'; this.emit();
     try {
-      this.status = 'syncing'; this.emit();
-      await this.call({ action: 'batch', ops });
+      const res = await run;
       this.queue = this.queue.slice(ops.length);
+      this.applyResults(res && res.results);
       this.persist();
       this.status = 'idle'; this.error = '';
     } catch (e) {
       this.status = isNetwork(e) ? 'offline' : 'error';
       this.error = String(e.message || e);
       if (throwOnError) throw e;
-    } finally { this.emit(); }
+    } finally {
+      if (this._flushing === run) this._flushing = null;
+      this.emit();
+    }
+  }
+
+  // The rows as the server saved them (e.g. a confirmed block now has its Google Calendar event, a task its total
+  // time) — unless this device changed that row again in the meantime. "deleted" = the row no longer exists.
+  applyResults(results) {
+    if (!Array.isArray(results)) return;
+    const pending = new Set(this.queue.map((op) => `${op.table}|${op.op === 'delete' ? op.id : op.row[KEY[op.table]]}`));
+    for (const r of results) {
+      const list = this.data[r.table];
+      const k = KEY[r.table];
+      if (!list || !k) continue;
+      const id = r.deleted || (r.row && r.row[k]);
+      if (!id || pending.has(`${r.table}|${id}`)) continue;
+      const i = list.findIndex((x) => x[k] === id);
+      if (r.deleted) { if (i >= 0) list.splice(i, 1); } else if (i >= 0) list[i] = { ...list[i], ...r.row };
+    }
   }
 
   scheduleFlush() {
