@@ -5,6 +5,7 @@ import * as timer from './timer.js';
 import * as planner from './planner.js';
 import * as inbox from './inbox.js';
 import * as suggestions from './suggestions.js';
+import * as categories from './categories.js';
 import { aiState, aiText, moodleState, moodleText, calendarState, calendarText, noticeHtml, friendlyError, dismiss, whenLabel } from './notices.js';
 
 const SHEET_URL = 'https://docs.google.com/spreadsheets/d/10qLYln2zUiMo7dEI3xZ8pj4ncGX7TRmATZNuZfvUfWM/edit';
@@ -64,6 +65,7 @@ function boot() {
   planner.initPlanner($('#planner'), { openEditor, openTimer, toast, onRender: () => renderSummary() });
   inbox.initInbox($('#inbox'), { openEditor, toast });
   suggestions.init({ toast, render: () => { lastSig = ''; render(); } });
+  categories.init({ toast, render: () => { lastSig = ''; render(); }, showFilter: (f) => { store.setUi('course', f); showTab('tasks'); lastSig = ''; render(); } });
   showTab(store.ui('tab', 'tasks'));
   // the "new task" button shrinks to a round button while scrolling, so it covers less of the list
   let lastY = 0;
@@ -124,8 +126,12 @@ function renderSummary() {
   if (!store.configured) text = '';
   else if (tab === 'planner') text = planner.summary();
   else if (tab === 'inbox') text = inbox.summary();
-  else {
-    const open = store.data.tasks.filter((t) => t.status !== 'done' && t.status !== 'cancelled');
+  else if (categories.archiveName(store.ui('course', 'all'))) {
+    const n = visibleTasks().length;
+    text = `ארכיון: ${categories.archiveName(store.ui('course', 'all'))} · ${n === 1 ? 'משימה אחת' : `${n} משימות`}`;
+  } else {
+    // (tasks of archived categories don't count)
+    const open = store.data.tasks.filter((t) => t.status !== 'done' && t.status !== 'cancelled' && !store.taskArchived(t));
     const overdue = open.filter((t) => bucketOf(t) === 'overdue').length;
     text = open.length ? `${open.length} פתוחות${overdue ? `, ${overdue} באיחור` : ''}` : 'אין משימות פתוחות';
   }
@@ -144,8 +150,9 @@ function render() {
   badge.textContent = n > 99 ? '99+' : String(n);
   badge.hidden = !n;
   if ($('#timerSheet').open) renderTimerSheet();
-  const sig = JSON.stringify([store.data.suggestions, store.data.blocks.length, store.data.tasks, store.data.sessions, store.setting('active_timer'), store.data.courses, store.ui('course', 'all'),
-    store.ui('showDone', false), store.configured, store.status === 'syncing' && !store.data.tasks.length, todayIL()]);
+  categories.refresh();
+  const sig = JSON.stringify([store.data.suggestions, store.data.blocks.length, store.data.tasks, store.data.sessions, store.setting('active_timer'), store.data.courses, store.data.groups, store.ui('course', 'all'),
+    store.ui('showDone', false), store.ui('showDoneArchive', true), store.configured, store.canSaveCategories, store.status === 'syncing' && !store.data.tasks.length, todayIL()]);
   if (sig === lastSig) return;
   lastSig = sig;
   renderFilters();
@@ -167,22 +174,23 @@ function renderSync() {
   pill.title = store.status === 'error' ? friendlyError(store.error) : (store.lastSync ? `סונכרן לאחרונה: ${store.lastSync}` : '');
 }
 
-function activeCourses() {
-  return store.data.courses.filter((c) => c.active !== 'FALSE');
-}
-
+// Chips above the list: all / meta categories / categories (archived ones are gone), and "קטגוריות" to manage them.
+let lastFilter = null;
 function renderFilters() {
-  const current = store.ui('course', 'all');
-  const chips = [`<button class="chip ${current === 'all' ? 'on' : ''}" data-course="all">הכל</button>`];
-  for (const c of activeCourses()) {
-    chips.push(`<button class="chip ${current === c.slug ? 'on' : ''}" data-course="${esc(c.slug)}" style="--c:${esc(c.color)}"><i></i>${esc(c.short_he || c.name_he)}</button>`);
-  }
-  $('#filters').innerHTML = chips.join('');
+  const el = $('#filters');
+  const f = store.ui('course', 'all');
+  const keep = el.scrollLeft;
+  el.innerHTML = categories.filtersHtml(f);
+  el.scrollLeft = keep;
+  // a newly chosen chip (e.g. a meta category that just opened) is brought into view in the scrolling row
+  if (f !== lastFilter && lastFilter !== null) el.querySelector('.chip.on')?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+  lastFilter = f;
 }
 
+// The tasks the list shows for the current filter (tasks of archived categories only in their archive view).
 function visibleTasks() {
-  const course = store.ui('course', 'all');
-  return store.data.tasks.filter((t) => course === 'all' || t.course === course);
+  const f = store.ui('course', 'all');
+  return store.data.tasks.filter((t) => categories.matches(t, f));
 }
 
 function sortKey(t) { return `${t.due_date || '9999-99-99'} ${t.due_time || '99:99'} ${t.title}`; }
@@ -202,7 +210,9 @@ function renderTasks() {
 
   const groups = Object.fromEntries(SECTIONS.map(([k]) => [k, []]));
   for (const t of tasks) groups[bucketOf(t)].push(t);
-  const showDone = store.ui('showDone', false);
+  const archived = categories.archiveName(store.ui('course', 'all'));
+  // in the archive most tasks are done: there the done list starts open
+  const showDone = archived ? store.ui('showDoneArchive', true) : store.ui('showDone', false);
 
   let html = '';
   for (const [key, label] of SECTIONS) {
@@ -221,9 +231,28 @@ function renderTasks() {
         <ul class="cards">${list.map(card).join('')}</ul></section>`;
     }
   }
-  if (!html) html = `<div class="empty"><p>${store.ui('course', 'all') === 'all' ? 'עוד אין משימות.' : 'אין משימות בקורס הזה.'}</p><button class="btn primary" data-action="new">משימה חדשה</button></div>`;
+  if (archived) {
+    if (!html) html = '<div class="empty small"><p>לא היו כאן משימות.</p></div>';
+    main.innerHTML = archiveBanner() + html;
+    return;
+  }
+  if (!html) html = `<div class="empty"><p>${store.ui('course', 'all') === 'all' ? 'עוד אין משימות.' : 'אין כאן משימות.'}</p><button class="btn primary" data-action="new">משימה חדשה</button></div>`;
   else if (!tasks.some((t) => bucketOf(t) !== 'done')) html = `<div class="empty small"><p>אין משימות פתוחות 🎉</p></div>` + html;
   main.innerHTML = suggestions.html() + html;
+}
+
+// Top of the list while looking at something archived: what this is, and the way back.
+function archiveBanner() {
+  const f = store.ui('course', 'all');
+  const p = categories.parseFilter(f);
+  const at = p.kind === 'cat' ? (p.c.active === 'FALSE' ? p.c.archived_at : p.g.archived_at) : p.g.archived_at;
+  const restore = store.canSaveCategories
+    ? `<button type="button" class="btn ghost sm" data-action="${p.kind === 'cat' && p.c.active === 'FALSE' ? 'restoreCat' : 'restoreGroup'}">שחזר</button>` : '';
+  return `<div class="archive-banner" role="status">
+    ${categories.ICON.archive}
+    <div class="ab-text"><b>ארכיון: ${esc(categories.archiveName(f))}</b><span>${at ? `הועבר לארכיון ב-${esc(shortDate(at))}.${esc(at.slice(0, 4))}. ` : ''}המשימות האלה מוסתרות מהמסכים הרגילים, ושום דבר לא נמחק.</span></div>
+    <div class="ab-acts">${restore}<button type="button" class="btn ghost sm" data-action="leaveArchive">סגור</button></div>
+  </div>`;
 }
 
 // "היום" and "מחר" headings also show the actual day, like a diary page.
@@ -250,7 +279,7 @@ function card(t) {
   const bucket = bucketOf(t);
   const links = (t.links || '').split('\n').filter((x) => x.trim()).length;
   const meta = [];
-  if (c) meta.push(`<span class="course"><i></i>${esc(c.short_he || c.name_he)}</span>`);
+  if (c) meta.push(`<span class="course"><i></i>${esc(categories.label(c.slug))}</span>`);
   if (t.status === 'in_progress') meta.push(`<span class="state">בתהליך</span>`);
   if (t.status === 'cancelled') meta.push(`<span class="state">בוטל</span>`);
   const spent = store.spentMinutes(t.id);
@@ -279,9 +308,12 @@ function card(t) {
 /* ---------------------------------------------------------- events ---- */
 
 function onFilterClick(e) {
+  if (e.target.closest('[data-manage]')) return categories.openManager();
   const b = e.target.closest('[data-course]');
   if (!b) return;
-  store.setUi('course', b.dataset.course);
+  // tapping the open meta category again closes it
+  const v = b.dataset.course;
+  store.setUi('course', v.startsWith('g:') && store.ui('course', 'all') === v ? 'all' : v);
   render();
 }
 
@@ -292,7 +324,20 @@ function onMainClick(e) {
   const action = el.dataset.action;
   if (action === 'settings') return openSettings();
   if (action === 'new') return openEditor(null);
-  if (action === 'toggleDone') { store.setUi('showDone', !store.ui('showDone', false)); return render(); }
+  if (action === 'toggleDone') {
+    const k = categories.archiveName(store.ui('course', 'all')) ? 'showDoneArchive' : 'showDone';
+    store.setUi(k, !store.ui(k, k === 'showDoneArchive'));
+    return render();
+  }
+  if (action === 'leaveArchive') { store.setUi('course', 'all'); return render(); }
+  if (action === 'restoreCat' || action === 'restoreGroup') {
+    const p = categories.parseFilter(store.ui('course', 'all'));
+    const name = categories.archiveName(store.ui('course', 'all'));
+    if (action === 'restoreCat') store.saveCategory({ slug: p.c.slug, active: 'TRUE', archived_at: '' });
+    else store.saveGroup({ id: p.g.id, active: 'TRUE', archived_at: '' });
+    toast(`שוחזר מהארכיון: „${name}”`);
+    return render();
+  }
   const id = el.closest('[data-id]')?.dataset.id;
   if (!id) return;
   if (action === 'cycle') {
@@ -311,11 +356,10 @@ function onMainClick(e) {
 function openEditor(id, opts = {}) {
   const dlg = $('#editor');
   const t = id ? { ...store.task(id) } : {
-    title: '', course: store.ui('course', 'all') === 'all' ? '' : store.ui('course', 'all'),
+    title: '', course: categories.defaultFor(store.ui('course', 'all')),
     status: 'todo', due_date: '', due_time: '', estimate_hours: '', notes: '', links: '', ...(opts.prefill || {}),
   };
   const today = todayIL();
-  const courses = activeCourses();
   dlg.innerHTML = `<form method="dialog" class="sheet-form" novalidate>
     <header class="sheet-head">
       <h2 ${id ? 'tabindex="-1" autofocus' : ''}>${id ? 'עריכת משימה' : 'משימה חדשה'}</h2>
@@ -325,11 +369,10 @@ function openEditor(id, opts = {}) {
       <label class="field"><span>שם המשימה</span>
         <input name="title" required autocomplete="off" value="${esc(t.title)}" placeholder="למשל: תרגיל בית 2" ${id ? '' : 'autofocus'}></label>
 
-      <fieldset class="field"><legend>קורס</legend>
-        <div class="chips wrap">
-          <label class="chip"><input type="radio" name="course" value="" ${!t.course ? 'checked' : ''}><span>ללא</span></label>
-          ${courses.map((c) => `<label class="chip" style="--c:${esc(c.color)}"><input type="radio" name="course" value="${esc(c.slug)}" ${t.course === c.slug ? 'checked' : ''}><span><i></i>${esc(c.short_he || c.name_he)}</span></label>`).join('')}
-        </div></fieldset>
+      <fieldset class="field cat-field"><legend>${categories.noun()}</legend>
+        <div class="cat-pick">${categories.pickerHtml(t.course)}</div>
+        ${store.canSaveCategories ? `<button type="button" class="linkish new-cat" data-newcat>+ ${categories.noun()} חדש${categories.noun() === 'קורס' ? '' : 'ה'}</button>` : ''}
+      </fieldset>
 
       <fieldset class="field"><legend>סטטוס</legend>
         <div class="segmented">
@@ -377,6 +420,16 @@ function openEditor(id, opts = {}) {
 
   const form = $('form', dlg);
   dlg.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', () => dlg.close()));
+  // a new category from inside the editor: it opens on top, and comes back chosen
+  $('[data-newcat]', dlg)?.addEventListener('click', () => {
+    const chosen = store.course(String(new FormData(form).get('course') || ''));
+    const p = categories.parseFilter(store.ui('course', 'all'));
+    const group = chosen && !store.categoryArchived(chosen.slug) ? chosen.group : (!p.archived && p.g ? p.g.id : '');
+    categories.openCategoryForm(null, { group, onSaved: (slug) => {
+      $('.cat-pick', dlg).innerHTML = categories.pickerHtml(slug);
+      $('.cat-field legend', dlg).textContent = categories.noun();
+    } });
+  });
   dlg.querySelectorAll('[data-date]').forEach((b) => b.addEventListener('click', () => {
     form.due_date.value = b.dataset.date;
     if (!b.dataset.date) form.due_time.value = '';
@@ -457,6 +510,16 @@ function prettyUrl(u) {
 
 /* -------------------------------------------------------- settings ---- */
 
+// "2 קטגוריות־על · 7 קטגוריות · 1 בארכיון"
+function categoriesSummary() {
+  const groups = store.data.groups.filter((g) => g.active !== 'FALSE').length;
+  const cats = store.data.courses.filter((c) => !store.categoryArchived(c.slug)).length;
+  const archived = store.data.groups.filter((g) => g.active === 'FALSE').length +
+    store.data.courses.filter((c) => c.active === 'FALSE' && store.group(c.group)?.active !== 'FALSE').length;
+  return [groups ? `${groups === 1 ? 'קטגוריית־על אחת' : `${groups} קטגוריות־על`}` : '', `${cats === 1 ? 'קטגוריה אחת' : `${cats} קטגוריות`}`,
+    archived ? `${archived} בארכיון` : ''].filter(Boolean).join(' · ');
+}
+
 // A status line in settings: what it means, and the original text under "פרטים" when something is wrong.
 function statusLine(st, text, extra) {
   if (st.kind === 'error' || st.kind === 'waiting' || st.kind === 'off' || (st.kind === 'ok' && st.drive)) {
@@ -532,6 +595,10 @@ function openSettings() {
         ${deviceLink ? `<button type="button" class="btn ghost" data-copy>העתק קישור הגדרה למכשיר נוסף</button>
           <p class="hint small">פתח את הקישור בטלפון / באייפד והמכשיר יתחבר. הקישור מכיל את המפתח — אל תשתף אותו.</p>` : ''}
         <hr>
+        <h3 class="sub-h">קטגוריות וארכיון</h3>
+        <p class="hint small">${esc(categoriesSummary())}. כאן מוסיפים קורסים, קטגוריות וקטגוריות־על (סמסטר, פרויקט, משימות יומיות), ומעבירים לארכיון סמסטר שנגמר או פרויקט שהסתיים — בלי למחוק כלום.</p>
+        <div class="row wrap"><button type="button" class="btn ghost" data-cats>ניהול קטגוריות</button></div>
+        <hr>
         <h3 class="sub-h">יומן Google</h3>
         ${calendarSettingsHtml()}
         <hr>
@@ -599,6 +666,7 @@ function openSettings() {
     try { await navigator.clipboard.writeText(deviceLink); toast('הקישור הועתק'); }
     catch { prompt('העתק את הקישור:', deviceLink); }
   });
+  $('[data-cats]', dlg)?.addEventListener('click', () => { dlg.close(); categories.openManager(); });
   dlg.querySelectorAll('[data-set]').forEach((inp) => inp.addEventListener('change', () => {
     const v = inp.type === 'checkbox' ? (inp.checked ? 'TRUE' : 'FALSE')
       : inp.tagName === 'SELECT' ? inp.value : String(Math.max(1, Math.round(Number(inp.value) || 1)));

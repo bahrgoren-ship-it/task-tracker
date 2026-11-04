@@ -3,17 +3,29 @@
 
 import { todayIL, addDays, nowStampIL } from './dates.js';
 
-const LS_KEY = 'ht.demo.v7';
+const LS_KEY = 'ht.demo.v8';
 
+// meta categories: this semester, everyday tasks, and a finished semester in the archive
+const GROUPS = [
+  { id: 'winter-2026-2027', name: 'סמסטר חורף תשפ״ז', kind: 'semester', active: 'TRUE', sort: '1', archived_at: '' },
+  { id: 'g_daily1', name: 'משימות יומיות', kind: 'general', active: 'TRUE', sort: '2', archived_at: '' },
+  { id: 'g_spring', name: 'סמסטר אביב תשפ״ו', kind: 'semester', active: 'FALSE', sort: '0', archived_at: '2026-07-30' },
+];
 const COURSES = [
-  ['ds-algs', 'מבני נתונים ואלגוריתמים', 'מבני נתונים', '#3B6FB6', '1349'],
-  ['databases', 'ניהול מסדי נתונים', 'מסדי נתונים', '#C8742B', '1350'],
-  ['statistics-1', 'סטטיסטיקה 1', 'סטטיסטיקה 1', '#3F8F5B', '1360'],
-  ['algebraic-methods', 'שיטות אלגבריות בהנדסת נתונים', 'שיטות אלגבריות', '#8B5E3C', '1377'],
-  ['game-theory', 'תורת המשחקים והתנהגות כלכלית', 'תורת המשחקים', '#7B5AA6', '1393'],
-].map(([slug, name_he, short_he, color, forum]) => ({ slug, name_he, short_he, color, active: 'TRUE', moodle_news_forum_id: forum }));
+  ['ds-algs', 'מבני נתונים ואלגוריתמים', 'מבני נתונים', '#3B6FB6', '531', '1349', 'winter-2026-2027'],
+  ['databases', 'ניהול מסדי נתונים', 'מסדי נתונים', '#C8742B', '532', '1350', 'winter-2026-2027'],
+  ['statistics-1', 'סטטיסטיקה 1', 'סטטיסטיקה 1', '#3F8F5B', '542', '1360', 'winter-2026-2027'],
+  ['algebraic-methods', 'שיטות אלגבריות בהנדסת נתונים', 'שיטות אלגבריות', '#8B5E3C', '559', '1377', 'winter-2026-2027'],
+  ['game-theory', 'תורת המשחקים והתנהגות כלכלית', 'תורת המשחקים', '#7B5AA6', '575', '1393', 'winter-2026-2027'],
+  ['c_daily1', 'משימות יומיות', '', '#B04A6F', '', '', 'g_daily1'],
+  ['intro-cs', 'מבוא למדעי המחשב', 'מבוא למדמ״ח', '#2E8A87', '', '', 'g_spring'],
+  ['calculus-1', 'חשבון דיפרנציאלי ואינטגרלי 1', 'חדו״א 1', '#B8902A', '', '', 'g_spring'],
+].map(([slug, name_he, short_he, color, moodle, forum, group], i) => ({ slug, name_he, short_he, color, active: 'TRUE', moodle_course_id: moodle,
+  moodle_news_forum_id: forum, group, sort: String(i + 1), archived_at: '' }));
 // like the backend: a change to a row that no longer exists, without these fields, is dropped (not half-created)
-const REQUIRED = { tasks: ['title'], sessions: ['task_id', 'start'], blocks: ['task_id', 'start', 'end'], moodle_inbox: ['moodle_ref'], suggestions: ['op'] };
+const REQUIRED = { tasks: ['title'], sessions: ['task_id', 'start'], blocks: ['task_id', 'start', 'end'], courses: ['name_he'], groups: ['name'],
+  moodle_inbox: ['moodle_ref'], suggestions: ['op'] };
+const KEY = { courses: 'slug', settings: 'key' }; // others: id
 
 const dm = (d) => `${+d.slice(8)}.${+d.slice(5, 7)}`;
 
@@ -37,6 +49,13 @@ function seed() {
       task('t_demo07', 'רענון פייתון', 'databases', 'done', -1),
       task('t_demo08', 'סיכום הרצאה 3', 'statistics-1', 'todo', 0),
       task('t_demo09', 'קריאה: עצים מאוזנים', 'ds-algs', 'todo', 3, { estimate_hours: '1.5', due_time: '12:00' }),
+      task('t_demo10', 'לחדש את כרטיס הרב-קו', 'c_daily1', 'todo', 2),
+      task('t_demo11', 'לקבוע תור לרופא שיניים', 'c_daily1', 'todo', null),
+      // the archived semester: its tasks wait in the archive
+      task('t_demo12', 'תרגיל בית 5', 'intro-cs', 'done', -110),
+      task('t_demo13', 'הכנה למבחן', 'intro-cs', 'done', -100, { estimate_hours: '20' }),
+      task('t_demo14', 'תרגיל בית 9', 'calculus-1', 'done', -115),
+      task('t_demo15', 'לבקש סריקה של המבחן', 'calculus-1', 'cancelled', -90),
     ],
     sessions: [
       { id: 's_demo01', task_id: 't_demo02', start: `${addDays(t, -1)} 20:00`, end: `${addDays(t, -1)} 20:50`,
@@ -47,6 +66,7 @@ function seed() {
       { id: 'b_demo02', task_id: 't_demo04', start: `${t} 18:00`, end: `${t} 19:00`, state: 'draft', sync_calendar: '', calendar_event_id: '', note: '', updated_at: now },
     ],
     courses: COURSES,
+    groups: GROUPS.map((g) => ({ ...g, created_at: now, updated_at: now })),
     settings: [{ key: 'default_block_minutes', value: '60' }, { key: 'ai_status', value: `ok · 3 reviewed · ${now} · gemini-flash-lite (הדגמה)` },
       { key: 'moodle_status', value: 'ok · הדגמה' }, { key: 'moodle_last_check', value: now },
       { key: 'sync_blocks_to_calendar', value: 'TRUE' }, { key: 'blocks_calendar_name', value: 'לימודים' },
@@ -115,8 +135,8 @@ export class DemoBackend {
 
   async handle(p) {
     await new Promise((r) => setTimeout(r, 150));
-    if (p.action === 'ping') return { api_version: 6, now: nowStampIL(), demo: true };
-    if (p.action === 'bootstrap') return { suggestions: [], ...structuredClone(this.db), api_version: 6 };
+    if (p.action === 'ping') return { api_version: 7, now: nowStampIL(), demo: true };
+    if (p.action === 'bootstrap') return { suggestions: [], groups: [], ...structuredClone(this.db), api_version: 7 };
     if (p.action === 'calendars') {
       return { calendars: [{ name: 'bahr.goren@gmail.com', primary: true }, { name: 'לימודים' }, { name: 'אישי' }].map((c) => ({ id: c.name, color: '#4285F4', primary: false, ...c })),
         chosen: (this.db.settings.find((r) => r.key === 'blocks_calendar_name') || {}).value || '' };
@@ -148,13 +168,17 @@ export class DemoBackend {
     if (p.action === 'batch') {
       const results = [];
       for (const o of p.ops) {
-        const k = o.table === 'settings' ? 'key' : 'id';
-        const list = this.db[o.table];
+        const k = KEY[o.table] || 'id';
+        const list = this.db[o.table] || (this.db[o.table] = []);
         if (o.op === 'upsert') {
           const i = list.findIndex((r) => r[k] === o.row[k]);
           if (i < 0 && (REQUIRED[o.table] || []).some((c) => !o.row[c])) { results.push({ table: o.table, deleted: o.row[k] }); continue; }
           if (i >= 0) list[i] = { ...list[i], ...o.row }; else list.push({ ...o.row });
         } else if (o.op === 'delete') {
+          // like the backend: a category in use / a meta category with categories is kept (and sent back)
+          const used = (o.table === 'courses' && (this.db.tasks.some((t) => t.course === o.id) || this.db.moodle_inbox.some((m) => m.course === o.id)))
+            || (o.table === 'groups' && this.db.courses.some((c) => c.group === o.id));
+          if (used) { const row = list.find((r) => r[k] === o.id); results.push(row ? { table: o.table, row: { ...row } } : { table: o.table, deleted: o.id }); continue; }
           this.db[o.table] = list.filter((r) => r[k] !== o.id);
           if (o.table === 'tasks') {
             this.db.blocks = this.db.blocks.filter((b) => b.task_id !== o.id);

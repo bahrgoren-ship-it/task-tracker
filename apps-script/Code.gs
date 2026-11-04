@@ -7,6 +7,10 @@
  * a Moodle check (announcements + assignments → moodle_inbox), run every 10 minutes by a trigger that setup()
  * installs, and an AI review (Gemini, built for the free tier) of new Moodle messages that suggests tasks only
  * when no existing task already covers them.
+ * Categories: every task may belong to a category (tab 'courses': a course is one kind of category), and every
+ * category belongs to a meta category (tab 'groups': a semester, a project, general tasks). Bahr adds, edits and
+ * archives both in the app; an archived one is hidden there with its tasks (nothing is deleted) and its courses are
+ * no longer checked on Moodle.
  *
  * Setup (once): run setup() from the Apps Script editor, copy the key from the log,
  * then Deploy → New deployment → Web app (Execute as: Me, Who has access: Anyone).
@@ -17,8 +21,9 @@
 
 const SHEET_ID = '10qLYln2zUiMo7dEI3xZ8pj4ncGX7TRmATZNuZfvUfWM';
 const TZ = 'Asia/Jerusalem';
-const API_VERSION = 6; // 5: calendars action, chosen blocks calendar, batch returns fresh rows · 6: suggestions tab
-const SCHEMA_VERSION = 6; // bump when SCHEMA / settings change; the Sheet is migrated automatically
+const API_VERSION = 7; // 5: calendars action, chosen blocks calendar, batch returns fresh rows · 6: suggestions tab
+// · 7: categories and meta categories (tabs courses + groups) written by the app, archive
+const SCHEMA_VERSION = 7; // bump when SCHEMA / settings change; the Sheet is migrated automatically
 
 // Column order of each tab. Must match row 1 of the Sheet (see SCHEMA.md).
 const SCHEMA = {
@@ -26,16 +31,23 @@ const SCHEMA = {
     'links', 'source', 'moodle_ref', 'calendar_event_id', 'created_at', 'updated_at'],
   sessions: ['id', 'task_id', 'start', 'end', 'minutes', 'kind', 'note', 'updated_at'],
   blocks: ['id', 'task_id', 'start', 'end', 'state', 'sync_calendar', 'calendar_event_id', 'note', 'updated_at'],
+  // categories (a course is one kind of category). active = FALSE: archived. group = a groups.id
   courses: ['slug', 'name_he', 'short_he', 'number', 'moodle_course_id', 'moodle_news_forum_id', 'color',
-    'active', 'moodle_folder'],
+    'active', 'moodle_folder', 'group', 'sort', 'archived_at'],
+  // meta categories: a semester, a project, general tasks… Archiving one hides all of its categories and their tasks
+  groups: ['id', 'name', 'kind', 'active', 'sort', 'archived_at', 'created_at', 'updated_at'],
   moodle_inbox: ['id', 'course', 'kind', 'moodle_ref', 'posted_at', 'title', 'author', 'text', 'detected_dates',
     'url', 'status', 'task_id', 'ai_status', 'ai_summary', 'ai_suggestions', 'ai_checked_at'],
   settings: ['key', 'value', 'meaning'],
   // changes proposed by any AI with access to the Sheet; nothing happens until Bahr approves one in the app
   suggestions: ['id', 'status', 'summary', 'table', 'op', 'row_id', 'fields', 'reason', 'by', 'created_at', 'decided_at', 'result'],
 };
-const KEY_COLUMN = { tasks: 'id', sessions: 'id', blocks: 'id', courses: 'slug', moodle_inbox: 'id', settings: 'key', suggestions: 'id' };
-const ID_PREFIX = { tasks: 't', sessions: 's', blocks: 'b', moodle_inbox: 'm', suggestions: 'sg' };
+const KEY_COLUMN = { tasks: 'id', sessions: 'id', blocks: 'id', courses: 'slug', groups: 'id', moodle_inbox: 'id', settings: 'key', suggestions: 'id' };
+const ID_PREFIX = { tasks: 't', sessions: 's', blocks: 'b', courses: 'c', groups: 'g', moodle_inbox: 'm', suggestions: 'sg' };
+// a new tab is placed right after this one (default: at the end)
+const TAB_AFTER = { groups: 'courses' };
+// The first meta category: in schema 7 the courses that already exist go into it (see groupCourses_).
+const FIRST_GROUP = { id: 'winter-2026-2027', name: 'סמסטר חורף תשפ״ז', kind: 'semester' };
 // Columns removed in a later schema version (dropped by migrate_).
 const DROPPED = { tasks: ['grade'] };
 // Default settings rows: [key, value, meaning]. Missing keys are added by migrate_.
@@ -64,16 +76,18 @@ const DEFAULT_SETTINGS = [
   ['ai_last_error', '', "App-managed: Gemini's own text for the last problem (shown under 'פרטים' in the app)."],
   ['schema_version', String(SCHEMA_VERSION), 'Bumped when columns change (see SCHEMA.md).'],
 ];
-// Tables the app may write to, and which may have rows deleted.
-const WRITABLE = ['tasks', 'sessions', 'blocks', 'moodle_inbox', 'settings', 'suggestions'];
-const DELETABLE = ['tasks', 'sessions', 'blocks'];
+// Tables the app may write to, and which may have rows deleted. A category or meta category is deleted only while
+// nothing uses it (see inUse_); otherwise it is archived (active = FALSE), never deleted.
+const WRITABLE = ['tasks', 'sessions', 'blocks', 'courses', 'groups', 'moodle_inbox', 'settings', 'suggestions'];
+const DELETABLE = ['tasks', 'sessions', 'blocks', 'courses', 'groups'];
 // A row must have these to be created. A change to a row that no longer exists (deleted on another device, merged
 // as a duplicate…) without them is dropped instead of creating half a row.
-const REQUIRED = { tasks: ['title'], sessions: ['task_id', 'start'], blocks: ['task_id', 'start', 'end'], moodle_inbox: ['moodle_ref'], suggestions: ['op'] };
+const REQUIRED = { tasks: ['title'], sessions: ['task_id', 'start'], blocks: ['task_id', 'start', 'end'],
+  courses: ['name_he'], groups: ['name'], moodle_inbox: ['moodle_ref'], suggestions: ['op'] };
 // How Date cells (if someone typed a real date into the Sheet) are turned back into text.
 const DATE_FORMAT = { due_date: 'yyyy-MM-dd', due_time: 'HH:mm', posted_at: 'yyyy-MM-dd HH:mm',
   start: 'yyyy-MM-dd HH:mm', end: 'yyyy-MM-dd HH:mm', created_at: 'yyyy-MM-dd HH:mm',
-  updated_at: 'yyyy-MM-dd HH:mm', ai_checked_at: 'yyyy-MM-dd HH:mm' };
+  updated_at: 'yyyy-MM-dd HH:mm', ai_checked_at: 'yyyy-MM-dd HH:mm', archived_at: 'yyyy-MM-dd' };
 
 /* ------------------------------------------------------------------ setup ---- */
 
@@ -117,11 +131,11 @@ function handle_(req) {
   try {
     const key = PropertiesService.getScriptProperties().getProperty('API_KEY');
     if (!key || req.key !== key) return json_({ ok: false, error: 'unauthorized' });
+    if (req.action !== 'ping' && schemaBehind_()) withLock_(migrate_); // first request after a new version
     switch (req.action) {
       case 'ping':
         return json_({ ok: true, data: { api_version: API_VERSION, now: now_() } });
       case 'bootstrap':
-        if (Number(getSetting_('schema_version') || 1) < SCHEMA_VERSION) withLock_(migrate_);
         if (suggestionsWithoutId_()) withLock_(fillSuggestionIds_);
         return json_({ ok: true, data: bootstrap_() });
       case 'batch':
@@ -204,6 +218,7 @@ function batch_(ops) {
   const results = [];
   const touched = {}; // task ids whose total time must be recomputed
   const cal = { tasks: {}, blocks: {}, dead: [], full: false }; // what the calendar sync must look at
+  let paint = false; // a category changed: refresh the colour swatches in the courses tab
   ops.forEach(function (o) {
     if (WRITABLE.indexOf(o.table) < 0) throw new Error('table not writable: ' + o.table);
     if (o.op === 'upsert') {
@@ -216,10 +231,16 @@ function batch_(ops) {
       if (o.table === 'sessions') touched[row.task_id] = true;
       if (o.table === 'tasks') cal.tasks[row.id] = true;
       if (o.table === 'blocks') cal.blocks[row.id] = true;
+      if (o.table === 'courses') paint = true;
       if (o.table === 'settings' && /^(sync_.*_to_calendar|blocks_calendar_name)$/.test(row.key)) cal.full = true;
       results.push({ table: o.table, row: row });
     } else if (o.op === 'delete') {
       if (DELETABLE.indexOf(o.table) < 0) throw new Error('rows of ' + o.table + ' cannot be deleted');
+      if (inUse_(o.table, o.id)) { // a category with tasks / a meta category with categories: keep it, send it back
+        const kept = rowById_(o.table, o.id);
+        results.push(kept ? { table: o.table, row: kept } : { table: o.table, deleted: o.id });
+        return;
+      }
       const old = deleteRow_(o.table, o.id);
       if (o.table === 'sessions' && old) touched[old.task_id] = true;
       if (old && old.calendar_event_id) cal.dead.push({ table: o.table, id: old.calendar_event_id });
@@ -245,11 +266,35 @@ function batch_(ops) {
     const row = id ? recomputeSpent_(id) : null;
     if (row) results.push({ table: 'tasks', row: row });
   });
+  if (paint) { try { paintCourseColors_(sheet_('courses')); } catch (err) { /* only the look of the Sheet */ } }
   return { results: results, now: now_() };
 }
 
 function rowExists_(table, id) {
   return findRow_(sheet_(table), SCHEMA[table].indexOf(KEY_COLUMN[table]), id) > 0;
+}
+
+/** One row as an object, or null. */
+function rowById_(table, id) {
+  const cols = SCHEMA[table];
+  const sh = sheet_(table);
+  const rowNum = findRow_(sh, cols.indexOf(KEY_COLUMN[table]), id);
+  if (rowNum < 0) return null;
+  const vals = sh.getRange(rowNum, 1, 1, cols.length).getValues()[0];
+  const out = {};
+  cols.forEach(function (c, i) { out[c] = cellToString_(c, vals[i]); });
+  return out;
+}
+
+/** A category that tasks or Moodle messages point to, or a meta category that still has categories, is never deleted. */
+function inUse_(table, id) {
+  if (!id) return false;
+  if (table === 'courses') {
+    return readTable_('tasks').some(function (t) { return t.course === id; }) ||
+      readTable_('moodle_inbox').some(function (m) { return m.course === id; });
+  }
+  if (table === 'groups') return readTable_('courses').some(function (c) { return c.group === id; });
+  return false;
 }
 
 /** tasks.spent_hours = sum of sessions.minutes / 60 (2 decimals). */
@@ -272,6 +317,65 @@ function getSetting_(key) {
   return '';
 }
 
+/** Brings the Sheet up to this code's schema first (the first request / run after a new version is deployed). */
+function schemaBehind_() { return Number(getSetting_('schema_version') || 1) < SCHEMA_VERSION; }
+
+/* ------------------------------------------------- categories & archive ---- */
+// A category is a row of 'courses' (a course is a category with Moodle details); a meta category is a row of
+// 'groups'. Archived = active FALSE on either one. Archived things stay in the Sheet; the app hides them (and their
+// tasks) and the Moodle check / AI review skip them.
+
+/** Like readTable_, but [] while the tab doesn't exist yet (before the migration ran). */
+function readTableIfAny_(table) {
+  return SpreadsheetApp.openById(SHEET_ID).getSheetByName(table) ? readTable_(table) : [];
+}
+
+/** Slugs of the categories that are archived, or sit in an archived meta category: {slug: true}. */
+function archivedSlugs_() {
+  const offGroup = {};
+  readTableIfAny_('groups').forEach(function (g) { if (g.active === 'FALSE') offGroup[g.id] = true; });
+  const out = {};
+  readTable_('courses').forEach(function (c) { if (c.active === 'FALSE' || offGroup[c.group]) out[c.slug] = true; });
+  return out;
+}
+
+/** The courses the Moodle check reads: not archived, and with a Moodle course id (other categories have none). */
+function moodleCourses_() {
+  const archived = archivedSlugs_();
+  return readTable_('courses').filter(function (c) {
+    return !archived[c.slug] && String(c.moodle_course_id || '').trim() !== '';
+  });
+}
+
+/**
+ * Schema 7: every category belongs to a meta category. The first time (no meta categories yet), the courses that
+ * already exist go into FIRST_GROUP, in their current order. Safe to run again: it only fills what is empty.
+ */
+function groupCourses_() {
+  const courses = readTable_('courses');
+  if (readTable_('groups').length || !courses.length) return 0;
+  upsert_('groups', { id: FIRST_GROUP.id, name: FIRST_GROUP.name, kind: FIRST_GROUP.kind, active: 'TRUE', sort: '1' });
+  let n = 0;
+  courses.forEach(function (c, i) {
+    if (c.group) return;
+    upsert_('courses', { slug: c.slug, group: FIRST_GROUP.id, sort: c.sort || String(i + 1) });
+    n++;
+  });
+  return n;
+}
+
+/** The colour cell of each category shows its colour (as the Sheet was built). */
+function paintCourseColors_(sh) {
+  const last = sh.getLastRow();
+  if (last < 2) return;
+  const col = SCHEMA.courses.indexOf('color') + 1;
+  const range = sh.getRange(2, col, last - 1, 1);
+  const vals = range.getValues();
+  const ok = function (v) { return /^#[0-9a-fA-F]{6}$/.test(String(v || '').trim()); };
+  range.setBackgrounds(vals.map(function (r) { return [ok(r[0]) ? String(r[0]).trim() : null]; }));
+  range.setFontColors(vals.map(function (r) { return [ok(r[0]) ? '#FFFFFF' : null]; }));
+}
+
 /* -------------------------------------------------------------- migration ---- */
 
 /**
@@ -280,10 +384,14 @@ function getSetting_(key) {
  */
 function migrate_() {
   const ss = SpreadsheetApp.openById(SHEET_ID);
+  Object.keys(SCHEMA).forEach(function (table) { // missing tabs first (dropdowns may point to them)
+    if (ss.getSheetByName(table)) return;
+    const after = TAB_AFTER[table] && ss.getSheetByName(TAB_AFTER[table]);
+    if (after) ss.insertSheet(table, after.getIndex()); else ss.insertSheet(table);
+  });
   Object.keys(SCHEMA).forEach(function (table) {
     const cols = SCHEMA[table];
-    let sh = ss.getSheetByName(table);
-    if (!sh) sh = ss.insertSheet(table);
+    const sh = ss.getSheetByName(table);
     const lastRow = sh.getLastRow(), lastCol = Math.max(sh.getLastColumn(), 1);
     const values = lastRow ? sh.getRange(1, 1, lastRow, lastCol).getValues() : [[]];
     const header = values[0].map(String);
@@ -314,10 +422,13 @@ function migrate_() {
   });
   // schema 5: Bahr asked for confirmed work blocks in his calendar 'לימודים' — switch it on once
   if (existing.indexOf('blocks_calendar_name') < 0) setSetting_('sync_blocks_to_calendar', 'TRUE');
+  const grouped = groupCourses_(); // schema 7: the existing courses go into their semester
+  paintCourseColors_(sheet_('courses'));
   upsert_('settings', { key: 'schema_version', value: String(SCHEMA_VERSION) });
   readTable_('tasks').forEach(function (t) { recomputeSpent_(t.id); });
   writeAiHelp_();
   const fixed = cleanup_();
+  fixed.grouped = grouped;
   return 'migrated to schema ' + SCHEMA_VERSION + ' · ' + JSON.stringify(fixed);
 }
 
@@ -353,16 +464,18 @@ function fillSuggestionIds_() {
 }
 
 const AI_HELP = [
-  'How to suggest a change to Bahr\'s tasks (for any AI that can edit this Sheet)',
+  'How to suggest a change to Bahr\'s tasks or categories (for any AI that can edit this Sheet)',
   '',
   'Add ONE ROW to the tab "suggestions" for each change. Bahr sees it in the app and approves or rejects it. Never edit the',
-  'tasks / blocks / sessions tabs directly. Leave id, status, created_at, decided_at, result empty (filled automatically).',
+  'tasks / blocks / sessions / courses / groups tabs directly. Leave id, status, created_at, decided_at, result empty (filled automatically).',
   '',
   'Columns:',
   '  summary  – what the change is, short Hebrew, written to Bahr (male), e.g. "להוסיף משימה: תרגיל בית 3 בסטטיסטיקה, הגשה ב-20.11"',
-  '  table    – tasks | blocks | sessions   (tasks = the task list; blocks = planned work time in the planner; sessions = time already worked)',
+  '  table    – tasks | blocks | sessions | courses | groups',
+  '             (tasks = the task list; blocks = planned work time in the planner; sessions = time already worked;',
+  '              courses = categories, e.g. a course or "בית"; groups = meta categories, e.g. a semester, a project, "משימות יומיות")',
   '  op       – create | update | delete',
-  '  row_id   – for update / delete: the id of the existing row (e.g. t_ab12cd). Empty for create.',
+  '  row_id   – for update / delete: the id of the existing row (e.g. t_ab12cd; for courses: the slug). Empty for create.',
   '  fields   – JSON object with only the columns to set, e.g. {"title":"תרגיל בית 3","course":"statistics-1","due_date":"2026-11-20","due_time":"23:59"}',
   '  reason   – why (one short Hebrew sentence)',
   '  by       – who suggests it (e.g. "Gemini", "Claude")',
@@ -373,6 +486,15 @@ const AI_HELP = [
   '            create may also include "blocks": [{"start":"2026-11-10 18:00","end":"2026-11-10 19:00"}] to plan work time for it.',
   '  blocks:   task_id, start, end ("yyyy-mm-dd HH:MM", Israel time), state (draft | planned | done | skipped), note.',
   '  sessions: task_id, start, end, minutes (number), note.',
+  '  courses:  name_he, short_he (short label), group (an id from the groups tab), color (#RRGGBB), number, moodle_course_id,',
+  '            moodle_folder (path under Technion Studies), active (TRUE | FALSE = archived).',
+  '            create needs name_he and group, and may include slug (lowercase English, e.g. "statistics-2").',
+  '  groups:   name, kind (semester | project | general), active (TRUE | FALSE = archived).',
+  '            A new project / general group starts with one category of the same name, so tasks can go into it.',
+  '',
+  'Archive = update with {"active":"FALSE"}; restore = {"active":"TRUE"}. An archived category or group is hidden in the app',
+  'together with its tasks (nothing is deleted) and its courses are no longer checked on Moodle. delete works only for a',
+  'category nothing uses (no tasks, no Moodle messages) or a group without categories.',
   '',
   'Rules: one change per row (several rows are fine). Dates/times are Israel time. Check the tasks tab first so you don\'t',
   'suggest something that already exists. Don\'t suggest the same thing twice — look at pending rows in "suggestions".',
@@ -383,6 +505,8 @@ const AI_HELP = [
   '  tasks update   row_id t_ab12cd   {"status":"done"}',
   '  blocks create  {"task_id":"t_ab12cd","start":"2026-11-10 18:00","end":"2026-11-10 20:00","state":"planned"}',
   '  blocks delete  row_id b_xy34zz   {}',
+  '  courses create {"name_he":"סטטיסטיקה 2","short_he":"סטטיסטיקה 2","group":"spring-2027","slug":"statistics-2"}',
+  '  groups update  row_id winter-2026-2027   {"active":"FALSE"}',
 ];
 function writeAiHelp_() {
   const ss = SpreadsheetApp.openById(SHEET_ID);
@@ -454,12 +578,21 @@ function styleTab_(sh, table, n) {
     sh.getRange(2, col(name), rows, 1).setDataValidation(
       SpreadsheetApp.newDataValidation().requireValueInList(values, true).setAllowInvalid(false).build());
   };
+  // a dropdown that also accepts other values (e.g. TRUE typed by hand, which Sheets turns into a checkbox value)
+  const hintList = function (name, values) {
+    sh.getRange(2, col(name), rows, 1).setDataValidation(
+      SpreadsheetApp.newDataValidation().requireValueInList(values, true).setAllowInvalid(true).build());
+  };
+  // a dropdown of the ids in another tab
+  const idsOf = function (name, tab) {
+    const other = SpreadsheetApp.openById(SHEET_ID).getSheetByName(tab);
+    if (other) sh.getRange(2, col(name), rows, 1).setDataValidation(SpreadsheetApp.newDataValidation()
+      .requireValueInRange(other.getRange('A2:A200'), true).setAllowInvalid(true).build());
+  };
   if (table === 'tasks') {
     list('status', ['todo', 'in_progress', 'done', 'cancelled']);
     list('source', ['manual', 'moodle', 'class', 'notion', 'ai']);
-    const courses = SpreadsheetApp.openById(SHEET_ID).getSheetByName('courses');
-    if (courses) sh.getRange(2, col('course'), rows, 1).setDataValidation(SpreadsheetApp.newDataValidation()
-      .requireValueInRange(courses.getRange('A2:A50'), true).setAllowInvalid(true).build());
+    idsOf('course', 'courses');
     const all = sh.getRange(2, 1, rows, n);
     const st = String.fromCharCode(64 + col('status')), due = String.fromCharCode(64 + col('due_date'));
     sh.setConditionalFormatRules([
@@ -472,6 +605,8 @@ function styleTab_(sh, table, n) {
   }
   if (table === 'sessions') list('kind', ['stopwatch', 'pomodoro', 'manual']);
   if (table === 'blocks') list('state', ['draft', 'planned', 'done', 'skipped']);
+  if (table === 'courses') { hintList('active', ['TRUE', 'FALSE']); idsOf('group', 'groups'); }
+  if (table === 'groups') { hintList('kind', ['semester', 'project', 'general']); hintList('active', ['TRUE', 'FALSE']); }
   if (table === 'moodle_inbox') list('status', ['new', 'accepted', 'ignored']);
   if (table === 'suggestions') {
     // hints only (invalid values allowed): an AI that writes "add" instead of "create" still works
@@ -480,7 +615,7 @@ function styleTab_(sh, table, n) {
         SpreadsheetApp.newDataValidation().requireValueInList(values, true).setAllowInvalid(true).build());
     };
     hint('status', ['pending', 'approved', 'rejected']);
-    hint('table', ['tasks', 'blocks', 'sessions']);
+    hint('table', ['tasks', 'blocks', 'sessions', 'courses', 'groups']);
     hint('op', ['create', 'update', 'delete']);
   }
 }
@@ -903,8 +1038,9 @@ function forumDiscussions_(forumId, wanted) {
  */
 const STUDIES_FOLDER_ID = '1HoErIXnpHGZiuPmThqXuOVe4iwEMKdDs'; // Technion Studies
 function driveFolderByPath_(path) {
-  let f = DriveApp.getFolderById(STUDIES_FOLDER_ID);
   const parts = String(path || '').split('/').filter(String);
+  if (!parts.length) return null; // never the top of Technion Studies itself
+  let f = DriveApp.getFolderById(STUDIES_FOLDER_ID);
   for (let i = 0; i < parts.length; i++) {
     const it = f.getFoldersByName(parts[i]);
     if (!it.hasNext()) return null;
@@ -1225,7 +1361,14 @@ function detectDates_(text, ref) {
 
 function moodleCheck_() {
   if (!PropertiesService.getScriptProperties().getProperty('MOODLE_TOKEN')) return { status: 'not connected' };
-  const courses = readTable_('courses').filter(function (c) { return c.active !== 'FALSE'; });
+  // courses only (categories with a Moodle course id), and not archived (themselves or their meta category)
+  const courses = moodleCourses_();
+  if (!courses.length) { // e.g. between semesters: with no course ids, Moodle would answer for every course
+    const idle = 'ok · 0 new · no active courses';
+    setSetting_('moodle_last_check', now_());
+    setSetting_('moodle_status', idle);
+    return { status: idle, added: 0, drive_saved: 0, drive_errors: [] };
+  }
   const inboxRefs = {};
   readTable_('moodle_inbox').forEach(function (r) { inboxRefs[r.moodle_ref] = true; });
   const taskByRef = {};
@@ -1265,6 +1408,7 @@ function moodleCheck_() {
         res = forumDiscussions_(forum.id, 20);
       } catch (apiErr) {
         // API refused → use the copies moodle-dl saved in Drive (only as fresh as the last moodle-dl run)
+        if (!c.moodle_folder) throw apiErr; // no Drive folder for this course: nothing to read instead
         viaDrive.push((c.short_he || c.slug) + ': ' + apiErr.message);
         driveAnnouncements_(c).forEach(function (p) {
           if (taskByRef[p.ref]) return;
@@ -1293,8 +1437,11 @@ function moodleCheck_() {
           url: MOODLE_SITE + '/mod/forum/discuss.php?d=' + did,
         });
       });
-      try { boardSync_(c, forum, res.discussions || [], board); }
-      catch (err) { board.errors.push((c.short_he || c.slug) + ': ' + err.message); }
+      // (only with a Drive folder: without one, the folders would be made at the top of Technion Studies)
+      if (c.moodle_folder) {
+        try { boardSync_(c, forum, res.discussions || [], board); }
+        catch (err) { board.errors.push((c.short_he || c.slug) + ': ' + err.message); }
+      }
     } catch (err) { errors.push((c.short_he || c.slug) + ': ' + err.message); }
   });
   try { saveBoardState_(board.state); saveFirstPosts_(firstPost); } catch (err) { board.errors.push('state: ' + err.message); }
@@ -1306,6 +1453,7 @@ function moodleCheck_() {
     const soon = Date.now() - 3 * 86400000;
     (res.courses || []).forEach(function (mc) {
       const c = courses.filter(function (x) { return String(x.moodle_course_id) === String(mc.id); })[0];
+      if (!c) return; // a course we didn't ask about
       (mc.assignments || []).forEach(function (a) {
         if (!a.duedate || a.duedate * 1000 < soon) return;
         const due = fmt_(new Date(a.duedate * 1000));
@@ -1648,9 +1796,10 @@ function aiReview_(opts) {
   const key = PropertiesService.getScriptProperties().getProperty('GEMINI_KEY');
   if (!key) return { status: 'not connected', reviewed: 0 };
   const data = { tasks: readTable_('tasks'), courses: readTable_('courses'), moodle_inbox: readTable_('moodle_inbox') };
+  const archived = archivedSlugs_(); // messages of archived courses wait (they're hidden in the app)
   const todo = data.moodle_inbox.filter(function (m) {
     if (opts.id) return m.id === opts.id;
-    return m.status === 'new' && m.kind !== 'date_change' && (!m.ai_status || m.ai_status === 'pending');
+    return m.status === 'new' && m.kind !== 'date_change' && (!m.ai_status || m.ai_status === 'pending') && !archived[m.course];
   }).sort(function (a, b) { return String(a.posted_at).localeCompare(String(b.posted_at)); });
   if (!todo.length) {
     if (/^waiting/.test(getSetting_('ai_status'))) setSetting_('ai_status', 'ok · 0 reviewed · ' + now_());
@@ -1750,6 +1899,8 @@ function scheduledSync() {
   const lock = LockService.getScriptLock();
   if (!lock.tryLock(5000)) return;
   try {
+    // a new version was deployed and the app wasn't opened yet (a failure is retried by the next request / run)
+    try { if (schemaBehind_()) migrate_(); } catch (err) { Logger.log('migration failed: ' + err.message); }
     try {
       if (getSetting_(CAL.deadlines.toggle) === 'TRUE' || getSetting_(CAL.blocks.toggle) === 'TRUE' ||
         getSetting_('deadline_calendar_id') || getSetting_('blocks_calendar_id')) syncCalendars_(false);

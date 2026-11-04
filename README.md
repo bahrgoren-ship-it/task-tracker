@@ -1,6 +1,6 @@
 # משימות — task tracker
 
-Installable Hebrew web app (PC, Android, iPad) for Bahr's tasks (starting with semester homework), with time tracking (estimate vs. actual, stopwatch & pomodoro), a drag-and-drop week planner synced with Google Calendar, and a Moodle inbox where an AI (Gemini) reads every message and suggests only the tasks you don't already have, backed by a Google Sheet so any AI
+Installable Hebrew web app (PC, Android, iPad) for Bahr's tasks (starting with semester homework), with time tracking (estimate vs. actual, stopwatch & pomodoro), a drag-and-drop week planner synced with Google Calendar, a Moodle inbox where an AI (Gemini) reads every message and suggests only the tasks you don't already have, and categories grouped in meta categories (a semester, a project, everyday tasks) that can be archived when they're over, backed by a Google Sheet so any AI
 with Google access (Gemini, Claude…) can read the same data.
 
 - **App:** https://bahrgoren-ship-it.github.io/task-tracker/

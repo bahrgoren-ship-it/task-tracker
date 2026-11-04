@@ -1,4 +1,4 @@
-# Task tracker — data schema (schema_version 4)
+# Task tracker — data schema (schema_version 7)
 
 The tracker's data lives in ONE Google Sheet:
 
@@ -15,8 +15,10 @@ Rules for anyone (human or AI) who edits it:
    Every cell is stored as **plain text** (cell format "Plain text"), so dates never get auto-converted.
    When writing with a script, set the number format to `@` before writing.
 3. `id` values are permanent. New ids: prefix + `_` + 6 random lowercase letters/digits
-   (`t_` task, `s_` work session, `b_` block, `m_` Moodle inbox item).
-4. Never delete a task row to "finish" it — set `status` to `done` or `cancelled`.
+   (`t_` task, `s_` work session, `b_` block, `m_` Moodle inbox item, `g_` meta category; a category made in the app
+   gets a readable slug from its English name, e.g. `statistics-2`, or `c_` + 6 characters).
+4. Never delete a task row to "finish" it — set `status` to `done` or `cancelled`. Never delete a category or meta
+   category that is used — archive it (`active` = `FALSE`).
 5. Columns marked "app-managed" are written by the app / Apps Script only.
 6. When you change a row, set `updated_at` to now.
 
@@ -26,7 +28,7 @@ Rules for anyone (human or AI) who edits it:
 |---|---|
 | `id` | `t_xxxxxx`. Permanent. |
 | `title` | Task name (Hebrew or English). |
-| `course` | A `courses.slug` (e.g. `databases`). Empty = not course-specific. |
+| `course` | The task's category: a `courses.slug` (e.g. `databases`). Empty = no category. |
 | `status` | `todo` · `in_progress` · `done` · `cancelled` (UI: לא התחיל · בתהליך · הושלם · בוטל) |
 | `due_date` | Deadline date. Empty = no deadline. |
 | `due_time` | Optional `HH:MM`. Empty = end of that day. |
@@ -76,11 +78,48 @@ A task can have any number of blocks.
 
 Per task: planned hours = sum of `planned`+`done` blocks; done hours = sum of `done` blocks.
 
-## Tab `courses`
+## Tab `courses` — categories (קטגוריות)
 
-`slug`, `name_he`, `short_he` (chip label), `number`, `moodle_course_id` (on moodle26.technion.ac.il),
-`moodle_news_forum_id` (the course's לוח הודעות forum module), `color` (hex), `active`,
-`moodle_folder` (path under `Technion Studies`). `moodle_news_forum_id` is the page id (cmid) of the לוח הודעות; the backend looks up the forum itself. Same slugs as `.ai/courses.json`.
+Every task can belong to a category; a **course** is one kind of category (the one with Moodle details). Other
+categories are anything Bahr groups tasks by, e.g. "בית" or a part of a project. Bahr adds, edits and archives them in
+the app (the "קטגוריות" chip above the task list, or ⚙️ → קטגוריות וארכיון).
+
+| Column | Meaning |
+|---|---|
+| `slug` | Permanent id, used in `tasks.course` and `moodle_inbox.course`. The courses use the same slugs as `.ai/courses.json`. |
+| `name_he` | Full name. |
+| `short_he` | Short label for chips and cards (empty = `name_he`). |
+| `number` | Technion course number (courses only). |
+| `moodle_course_id` | The course's id on moodle26.technion.ac.il (`…/course/view.php?id=575` → `575`). **Only rows with it are checked on Moodle.** |
+| `moodle_news_forum_id` | Page id (cmid) of the course's לוח הודעות; optional, the backend finds the forum itself. |
+| `color` | Hex colour (`#RRGGBB`), the only colour in the app besides the accent. |
+| `active` | `TRUE`, or `FALSE` = **archived**. |
+| `moodle_folder` | Path under `Technion Studies` of the course's Moodle folder in Drive (where the cloud check saves the לוח הודעות posts). Empty = nothing is saved to Drive from the cloud. |
+| `group` | The meta category: a `groups.id`. |
+| `sort` | Order inside the meta category (number). |
+| `archived_at` | `yyyy-mm-dd` it was archived (empty while active). |
+
+## Tab `groups` — meta categories (קטגוריות־על)
+
+What categories are grouped in: a semester (its categories are its courses), a project, general tasks
+("משימות יומיות"), next semester…
+
+| Column | Meaning |
+|---|---|
+| `id` | Permanent id (`g_xxxxxx`; the first one, made by the schema-7 migration from the existing courses, is `winter-2026-2027`). |
+| `name` | e.g. `סמסטר חורף תשפ״ז`, `פרויקט גמר`, `משימות יומיות`. |
+| `kind` | `semester` · `project` · `general`. A semester's categories are called courses and get the Moodle fields in the app. A new project / general meta category starts with one category of the same name. |
+| `active` | `TRUE`, or `FALSE` = **archived** (with everything in it). |
+| `sort` | Order of the meta categories (number). |
+| `archived_at` | `yyyy-mm-dd` it was archived (empty while active). |
+| `created_at`, `updated_at` | Timestamps. |
+
+**Archive.** A category is archived when its own `active` is `FALSE` or its meta category's is. Archived = hidden in the
+app together with its tasks (task list, chips, task editor, planner, and the inbox's "חדשות"); nothing is deleted and
+Bahr can look at it and restore it from „קטגוריות” → „ארכיון”. The Moodle check and the AI review skip archived courses.
+Archiving a meta category leaves its categories' own `active` as it was, so restoring it brings back exactly what was there.
+A category is deleted only if no task and no Moodle message uses it, and a meta category only if it has no categories
+(the backend refuses otherwise).
 
 ## Tab `moodle_inbox` — Moodle messages and the AI's suggestions (app-managed)
 
@@ -120,7 +159,7 @@ Key/value pairs: `sync_deadlines_to_calendar`, `sync_blocks_to_calendar`, `defau
 `blocks_calendar_name` (Google Calendar for confirmed work blocks, default `לימודים`; empty = app calendar), `blocks_calendar_id`
 (calendar holding the events now), `calendar_last_sync`, `calendar_status` (`ok · time` / `error · time · what`), `moodle_last_check`,
 `moodle_status` (all app-managed), `ai_model` (empty = automatic: newest Flash-Lite, then newest Flash; or a model id to try first),
-`ai_status` (`ok · …` / `waiting · why · until · at` / `error · what · at`), `ai_last_error` (Gemini's text), `schema_version` (5).
+`ai_status` (`ok · …` / `waiting · why · until · at` / `error · what · at`), `ai_last_error` (Gemini's text), `schema_version` (7).
 
 ## Google Calendar (optional, switched on in the app's settings)
 
@@ -132,18 +171,20 @@ Key/value pairs: `sync_deadlines_to_calendar`, `sync_blocks_to_calendar`, `defau
 
 ## How programs access the data
 
-- **Schema changes** are applied by the backend itself: `migrate_()` in `Code.gs` (runs from `setup()` and on the
-  first request after a new version) reorders/creates columns and tabs by header name and keeps all data.
+- **Schema changes** are applied by the backend itself: `migrate_()` in `Code.gs` (runs from `setup()`, on the
+  first request after a new version, and from the 10-minute trigger) reorders/creates columns and tabs by header name
+  and keeps all data. Schema 7 added the `groups` tab and `courses.group/sort/archived_at`, and put the existing
+  courses into the meta category `winter-2026-2027`.
 - **The app** (https://bahrgoren-ship-it.github.io/task-tracker/) talks to an Apps Script web app bound to the
   Sheet (code: `apps-script/Code.gs` in the GitHub repo `bahrgoren-ship-it/task-tracker`). API: POST JSON
   `{key, action}` with `action` = `ping` · `bootstrap` (returns all tabs) · `batch` (`ops: [{op:'upsert', table, row} |
-  {op:'delete', table, id}]`) · `busy` (`from`, `to` dates → events of Bahr's calendars) · `syncNow` · `moodleCheck` ·
+  {op:'delete', table, id}]`; writable: tasks, sessions, blocks, courses, groups, moodle_inbox, settings, suggestions) · `busy` (`from`, `to` dates → events of Bahr's calendars) · `syncNow` · `moodleCheck` ·
   `setMoodleToken` (`token`) · `setGeminiKey` (`key_value`) · `aiReview` (optional `id` = review that message again). The key is secret (Script Properties) — never write it into files.
   A trigger runs `scheduledSync()` every 10 minutes (calendar two-way sync + Moodle check + AI review of new messages).
 - **An AI with Google Drive / Sheets access** (Gemini, Claude with the Drive connector) can read the Sheet directly.
   To change data, edit cells following the rules above, or ask Bahr to make the change in the app.
 
-## suggestions (schema 6)
+## suggestions (schema 6; categories since schema 7)
 Changes proposed by any AI that can edit the Sheet; the app shows them on the tasks screen and makes the change only when Bahr approves.
-Columns: `id`, `status` (pending · approved · rejected), `summary`, `table` (tasks · blocks · sessions), `op` (create · update · delete), `row_id`, `fields` (JSON), `reason`, `by`, `created_at`, `decided_at`, `result` (id of the row made/changed).
+Columns: `id`, `status` (pending · approved · rejected), `summary`, `table` (tasks · blocks · sessions · courses · groups), `op` (create · update · delete), `row_id`, `fields` (JSON), `reason`, `by`, `created_at`, `decided_at`, `result` (id of the row made/changed).
 How an AI writes one: [AI-SUGGESTIONS.md](AI-SUGGESTIONS.md). Rows typed without id/status get them on the next app load.

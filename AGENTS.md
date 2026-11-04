@@ -8,12 +8,13 @@ Bahr's task tracker (homework first; may grow to all tasks): a Hebrew (RTL) inst
 | `SCHEMA.md` | **Read first.** Tabs, columns and editing rules of the Google Sheet (the data). |
 | `docs/` | The app (served by GitHub Pages at https://bahrgoren-ship-it.github.io/task-tracker/). Plain HTML/CSS/JS ES modules, **no build step**. |
 | `docs/js/app.js` | UI: tasks screen, task editor, settings dialog. |
+| `docs/js/categories.js` | Categories (tab `courses`; a course is one kind) and meta categories (tab `groups`: a semester, a project, general tasks): the filter chips, the task editor's picker, the "קטגוריות" sheet (add / edit / archive / restore / delete-if-unused), the archive view. |
 | `docs/js/store.js` | Local copy of the data + queue of unsent changes + calls to the backend. |
 | `docs/js/dates.js` | Date helpers (everything in Israel time, strings `yyyy-mm-dd` / `HH:MM`). |
 | `docs/js/timer.js` | Stopwatch / pomodoro. State lives in the Sheet (`settings.active_timer`) so devices share it; focus time is saved to `sessions`. |
 | `docs/js/planner.js` | Planner: custom RTL week grid, drag tasks from the tray into work blocks (`blocks`), move/resize, tap-to-place, "אשר תכנון", busy layer from Google Calendar. No external libraries. |
 | `docs/js/notices.js` | Status strings (`ai_status`, `moodle_status`, `calendar_status`) → plain Hebrew + what to do; `noticeHtml` (original text under „פרטים”, dismissable). |
-| `docs/js/suggestions.js` | Card on the tasks screen: pending rows of the `suggestions` tab (any AI proposes, Bahr approves). Validates, shows before → after, applies through store, undo. |
+| `docs/js/suggestions.js` | Card on the tasks screen: pending rows of the `suggestions` tab (any AI proposes, Bahr approves): tasks, blocks, sessions, categories, meta categories. Validates, shows before → after, applies through store, undo. |
 | `docs/js/inbox.js` | "הודעות" screen: full Moodle messages + the AI's suggestions (add task / update task / not needed). A message is never a task by itself. |
 | `docs/js/demo.js` | In-browser fake backend ("demo mode"). Keep its API identical to the real one. |
 | `docs/sw.js` | Service worker (offline). **Bump `VERSION` whenever anything in `docs/` changes.** |
@@ -35,6 +36,13 @@ Bahr's task tracker (homework first; may grow to all tasks): a Hebrew (RTL) inst
 - Changing `Code.gs` only takes effect after Bahr pastes it into the Apps Script editor and creates a new
   deployment version (see SETUP.md) — tell him when that's needed.
 - Test UI changes in demo mode (settings → "נסה במצב הדגמה") on phone, iPad and desktop widths.
+- **Archive, not delete.** A category is archived when its own `active` is `FALSE` or its meta category's is
+  (`store.categoryArchived(slug)`, `store.taskArchived(task)`). Archived = hidden everywhere a task is offered (list,
+  chips, editor, planner tray and deadlines, inbox "חדשות") but kept in the Sheet, shown in the archive view and
+  restorable. Anything new that lists tasks must skip archived ones. The backend deletes a category / meta category
+  only while nothing uses it, and the Moodle check reads only courses with a `moodle_course_id` that aren't archived.
+- Saving categories needs backend v7: the app checks `store.canSaveCategories` (an older backend would refuse the
+  whole batch, so nothing for `courses` / `groups` may be queued before that).
 - Look ("a student diary on graph paper"): colour tokens live at the top of `styles.css` — ink on cool paper,
   one blue accent, red only for overdue / due times, course colour as the only other colour. Font: IBM Plex Sans
   Hebrew. Tasks are grouped by day into one list per day (rows with dividers), with the deadline at the end of
@@ -49,4 +57,5 @@ Bahr's task tracker (homework first; may grow to all tasks): a Hebrew (RTL) inst
 1. ✅ Sheet + Notion import. 2. ✅ Tasks screen + time tracking (estimate, total, stopwatch/pomodoro).
 3. ✅ Planner + Google Calendar sync (deadlines one-way, work blocks two-way). 4. ✅ Moodle inbox (announcements +
 assignments, every 15 min) + AI review (Gemini suggests tasks not already covered); ✅ Windows Task Scheduler for the file sync (moodle-dl) on Bahr's PC; ✅ announcements saved to Drive from the cloud. 5. AI procedures.
+6. ✅ Categories and meta categories edited in the app, with an archive (schema 7).
 Tests (Playwright + fake Apps Script services) are not in the repo; keep behaviour covered when changing things.
