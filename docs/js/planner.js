@@ -25,7 +25,9 @@ let lastSig = '';
 
 const $ = (sel, r = root) => r.querySelector(sel);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const hourPx = () => (window.innerWidth < 600 ? 46 : 52);
+// a phone turned sideways: little height, so shorter hours (matches the CSS media query)
+const shortLandscape = () => window.matchMedia('(orientation: landscape) and (max-height: 520px)').matches;
+const hourPx = () => (shortLandscape() ? 40 : window.innerWidth < 600 ? 46 : 52);
 const toMin = (hhmm) => +hhmm.slice(0, 2) * 60 + +hhmm.slice(3, 5);
 const toHHMM = (m) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
 const isOpen = (t) => t.status !== 'done' && t.status !== 'cancelled';
@@ -38,7 +40,12 @@ export function initPlanner(el, callbacks) {
   root.addEventListener('pointerdown', onPointerDown);
   root.addEventListener('contextmenu', (e) => { if (e.target.closest('.pl-grid, .pl-tray')) e.preventDefault(); });
   document.addEventListener('touchmove', (e) => { if (drag && drag.active) e.preventDefault(); }, { passive: false });
-  window.addEventListener('resize', () => { const d = daysForWidth(); if (d !== view.days) { resetView(); render(true); } });
+  let lastHour = hourPx();
+  window.addEventListener('resize', () => {
+    const d = daysForWidth(), h = hourPx();
+    if (d !== view.days) { resetView(); render(true); } else if (h !== lastHour) render(true);
+    lastHour = h;
+  });
   setInterval(() => { if (!root.hidden) drawNowLine(); }, 60000);
 }
 

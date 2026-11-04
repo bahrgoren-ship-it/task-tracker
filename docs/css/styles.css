@@ -498,7 +498,8 @@ body.has-timer .planner { height: calc(100dvh - var(--top) - 72px - 72px - env(s
 .quiet:disabled { color: var(--muted); text-decoration: none; cursor: default; }
 
 /* ---------- wide screens: tabs move into the header ---------- */
-@media (min-width: 900px) {
+/* also a phone turned sideways: the bottom bar would eat the little height there is */
+@media (min-width: 900px), (orientation: landscape) and (max-height: 520px) {
   .brand h1 { font-size: 1.6rem; }
   .tabbar {
     inset-inline: auto; left: 50%; top: calc(env(safe-area-inset-top) + 14px); bottom: auto; transform: translateX(-50%); z-index: 7;
@@ -519,3 +520,33 @@ body.has-timer .planner { height: calc(100dvh - var(--top) - 72px - 72px - env(s
   .planner { height: calc(100dvh - var(--top) - 14px - env(safe-area-inset-top)); }
   body.has-timer .planner { height: calc(100dvh - var(--top) - 14px - 72px - env(safe-area-inset-top)); }
 }
+
+/* ---------- phone in landscape: compact header, tasks beside the calendar ---------- */
+@media (orientation: landscape) and (max-height: 520px) {
+  body { padding-left: env(safe-area-inset-left); padding-right: env(safe-area-inset-right); }
+  .topbar-inner { padding-block: 6px 5px; }
+  .brand h1 { font-size: 1.15rem; }
+  .summary { font-size: .76rem; }
+  .brand { max-width: calc(50% - 150px); }
+  .tabbar { top: calc(env(safe-area-inset-top) + 7px); }
+  .tab { padding: 5px 11px; font-size: .84rem; gap: 6px; }
+  .filters { padding-bottom: 8px; }
+  .planner { --top: 54px; padding-top: 6px; }
+  .pl-toolbar { padding-bottom: 6px; }
+  .pl-body { flex-direction: row; gap: 8px; }
+  .pl-tray { width: 168px; overflow-x: hidden; overflow-y: auto; padding: 6px; }
+  .pl-tray ul { display: grid; grid-template-columns: minmax(0, 1fr); gap: 5px; }
+  .tray-task { width: auto; padding: 5px 7px; }
+  .pl-head { max-height: 26%; }
+  .pl-dayhead { padding: 3px; }
+  body[data-tab="planner"] .summary { display: none; } /* every pixel of height goes to the calendar */
+  body[data-tab="planner"] .planner { --top: 40px; }
+  .pl-toolbar .btn.sm { padding: 4px 10px; }
+  .pl-toolbar .icon-btn { width: 34px; height: 34px; }
+}
+@media (orientation: landscape) and (max-height: 520px) and (max-width: 680px) {
+  .sync-pill { font-size: 0; gap: 0; padding: 8px; } /* just the dot */
+  .tab { padding: 5px 8px; }
+  .brand { max-width: calc(50% - 125px); }
+}
+.install-steps { margin: 0; padding-inline-start: 1.3em; font-size: .9rem; display: grid; gap: 4px; }
