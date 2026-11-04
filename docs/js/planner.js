@@ -31,6 +31,8 @@ const hourPx = () => (shortLandscape() ? 40 : window.innerWidth < 600 ? 46 : 52)
 const toMin = (hhmm) => +hhmm.slice(0, 2) * 60 + +hhmm.slice(3, 5);
 const toHHMM = (m) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
 const isOpen = (t) => t.status !== 'done' && t.status !== 'cancelled';
+// tasks you can plan: open, and not in an archived category (their blocks stay on the calendar as history)
+const plannable = (t) => isOpen(t) && !store.taskArchived(t);
 const MONTHS = ['ינואר', 'פברואר', 'מרץ', 'אפריל', 'מאי', 'יוני', 'יולי', 'אוגוסט', 'ספטמבר', 'אוקטובר', 'נובמבר', 'דצמבר'];
 
 export function initPlanner(el, callbacks) {
@@ -77,7 +79,7 @@ export function render(force = false) {
   if (!root || root.hidden) return;
   if (drag && drag.active) return; // never redraw under the finger
   const days = visibleDays();
-  const sig = JSON.stringify([days, store.data.blocks, store.data.tasks, store.data.courses, selectedTask,
+  const sig = JSON.stringify([days, store.data.blocks, store.data.tasks, store.data.courses, store.data.groups, selectedTask,
     busyCache[`${days[0]}|${days[days.length - 1]}`] ? 1 : 0, store.setting('sync_blocks_to_calendar'), store.setting('calendar_status'),
     store.setting('blocks_calendar_name'), store.ui('dismissed', {}), window.innerWidth >= 900]);
   if (!force && sig === lastSig) return;
@@ -126,7 +128,7 @@ export function render(force = false) {
 }
 
 function trayHtml() {
-  const tasks = store.data.tasks.filter(isOpen)
+  const tasks = store.data.tasks.filter(plannable)
     .sort((a, b) => `${a.due_date || '9999'}${a.due_time}`.localeCompare(`${b.due_date || '9999'}${b.due_time}`));
   if (!tasks.length) return '<p class="hint small">אין משימות פתוחות.</p>';
   return `<p class="tray-hint">${window.matchMedia('(pointer: coarse)').matches ? 'החזק וגרור משימה ללוח, או הקש עליה ואז על שעה' : 'גרור משימה ללוח, או לחץ עליה ואז על שעה'}. כדי להחזיר בלוק — גרור אותו לכאן או הקש על ✕.</p>
@@ -143,7 +145,7 @@ function trayHtml() {
 }
 
 function headHtml(d) {
-  const dl = store.data.tasks.filter((t) => t.due_date === d && isOpen(t)); // finished tasks don't clutter the plan
+  const dl = store.data.tasks.filter((t) => t.due_date === d && plannable(t)); // finished / archived tasks don't clutter the plan
   const busy = (busyFor(d) || []).filter((e) => e.all_day);
   return `<div class="pl-dayhead ${d === todayIL() ? 'today' : ''}">
     <div class="dname">${weekday(d)} <b>${shortDate(d)}</b></div>
@@ -166,7 +168,7 @@ function dayEventsHtml(d) {
     html += `<div class="cal-busy" style="top:${topOf(a)}px;height:${Math.max(14, topOf(b) - topOf(a))}px" title="${esc(e.calendar)}"><span>${esc(e.title)}</span></div>`;
   }
   // deadline lines with a time
-  for (const t of store.data.tasks.filter((x) => x.due_date === d && x.due_time && isOpen(x))) {
+  for (const t of store.data.tasks.filter((x) => x.due_date === d && x.due_time && plannable(x))) {
     const m = toMin(t.due_time);
     if (m > START_H * 60) html += `<div class="due-line" style="top:${topOf(Math.min(m, END_H * 60 - 1))}px"><span>⏰ ${esc(t.title)} ${esc(t.due_time)}</span></div>`;
   }
@@ -489,7 +491,7 @@ function cleanupListeners() {
 
 function openChooser(day, startMin) {
   const dlg = document.querySelector('#blockSheet');
-  const tasks = store.data.tasks.filter(isOpen)
+  const tasks = store.data.tasks.filter(plannable)
     .sort((a, b) => `${a.due_date || '9999'}`.localeCompare(`${b.due_date || '9999'}`));
   dlg.innerHTML = `<div class="sheet-form">
     <header class="sheet-head"><h2 tabindex="-1" autofocus>מה לעשות ב-${toHHMM(startMin)}, יום ${weekday(day)} ${shortDate(day)}?</h2>

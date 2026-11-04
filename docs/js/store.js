@@ -16,8 +16,10 @@ function lsSet(k, v) {
   try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* storage full or blocked */ }
 }
 
-const EMPTY = { tasks: [], sessions: [], blocks: [], courses: [], settings: [], moodle_inbox: [], suggestions: [] };
-const KEY = { tasks: 'id', sessions: 'id', blocks: 'id', courses: 'slug', moodle_inbox: 'id', settings: 'key', suggestions: 'id' };
+const EMPTY = { tasks: [], sessions: [], blocks: [], courses: [], groups: [], settings: [], moodle_inbox: [], suggestions: [] };
+const KEY = { tasks: 'id', sessions: 'id', blocks: 'id', courses: 'slug', groups: 'id', moodle_inbox: 'id', settings: 'key', suggestions: 'id' };
+// backend version that can save categories (tab courses) and meta categories (tab groups)
+export const CATEGORIES_API = 7;
 
 export function newId(prefix) {
   const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
@@ -240,9 +242,40 @@ class Store {
       .reduce((s, b) => s + Math.max(0, minutesBetween(b.start, b.end)), 0);
   }
 
+  /* ---------- categories (tab courses) and meta categories (tab groups) ---------- */
+  // A category belongs to a meta category (column group). Archived = active 'FALSE' on either one: the category and
+  // its tasks are hidden, nothing is deleted. Saving them needs backend v7 (see CATEGORIES_API).
+  get canSaveCategories() { return this.configured && (this.isDemo || this.apiVersion >= CATEGORIES_API); }
+  group(id) { return this.data.groups.find((g) => g.id === id); }
+  saveGroup(patch) {
+    const now = nowStampIL();
+    const row = { ...patch, updated_at: now };
+    if (!row.id) { row.id = newId('g'); row.created_at = now; row.active = row.active || 'TRUE'; }
+    this.change({ op: 'upsert', table: 'groups', row });
+    return row.id;
+  }
+  deleteGroup(id) { this.change({ op: 'delete', table: 'groups', id }); }
+  saveCategory(patch) {
+    const row = { ...patch };
+    if (!row.slug) row.slug = newId('c');
+    this.change({ op: 'upsert', table: 'courses', row });
+    return row.slug;
+  }
+  deleteCategory(slug) { this.change({ op: 'delete', table: 'courses', id: slug }); }
+  /** true if the category is archived, or sits in an archived meta category (unknown / empty slug: false). */
+  categoryArchived(slug) {
+    const c = slug && this.course(slug);
+    if (!c) return false;
+    if (c.active === 'FALSE') return true;
+    const g = c.group && this.group(c.group);
+    return !!(g && g.active === 'FALSE');
+  }
+  taskArchived(t) { return !!t && this.categoryArchived(t.course); }
+
   /* ---------- Moodle inbox ---------- */
   saveInbox(row) { this.change({ op: 'upsert', table: 'moodle_inbox', row }); }
-  inboxNew() { return this.data.moodle_inbox.filter((m) => m.status === 'new'); }
+  // messages of archived courses wait out of sight (shown under "הכל")
+  inboxNew() { return this.data.moodle_inbox.filter((m) => m.status === 'new' && !this.categoryArchived(m.course)); }
 
   /* ---------- direct backend actions (v3+) ---------- */
   async busy(from, to) {

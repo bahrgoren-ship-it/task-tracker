@@ -44,11 +44,13 @@ export function render(force = false) {
   const showAll = store.ui('inboxAll', false);
   const sig = JSON.stringify([store.data.moodle_inbox, store.data.tasks.map((t) => [t.id, t.title, t.due_date, t.due_time]),
     showAll, store.setting('moodle_status'), store.setting('ai_status'), store.setting('ai_last_error'), store.apiVersion,
-    store.data.courses, [...expanded], [...reviewing], store.ui('dismissed', {})]);
+    store.data.courses, store.data.groups, [...expanded], [...reviewing], store.ui('dismissed', {})]);
   if (!force && sig === lastSig) return;
   lastSig = sig;
+  // "חדשות" leaves out messages of archived courses (they wait under "הכל")
+  const fresh = new Set(store.inboxNew());
   const items = store.data.moodle_inbox
-    .filter((m) => showAll || m.status === 'new')
+    .filter((m) => showAll || fresh.has(m))
     .sort((a, b) => (b.posted_at || '').localeCompare(a.posted_at || ''));
   const newCount = store.inboxNew().length;
   // notices only for what needs attention now: Moodle not connected / failing, or messages the AI can't read yet
@@ -59,7 +61,7 @@ export function render(force = false) {
     const ms = moodleState();
     if (ms.kind === 'off') head += noticeHtml({ tone: 'warn', ...moodleText(ms) });
     if (ms.kind === 'error') head += noticeHtml({ tone: 'err', ...moodleText(ms), tech: ms.tech, dismiss: `moodle:${ms.tech}` });
-    const waiting = store.data.moodle_inbox.some((m) => m.status === 'new' && m.kind !== 'date_change' && aiPending(m));
+    const waiting = store.inboxNew().some((m) => m.kind !== 'date_change' && aiPending(m));
     const as = aiState();
     if (store.apiVersion >= 4 && waiting) {
       if (as.kind === 'off') head += noticeHtml({ tone: 'warn', ...aiText(as) });
