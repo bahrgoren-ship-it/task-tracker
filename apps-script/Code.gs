@@ -816,17 +816,35 @@ function busy_(from, to) {
 // Reads each course's לוח הודעות (news forum) and the assignments with due dates from Technion Moodle,
 // using Bahr's Moodle token (the same one moodle-dl uses). The token is kept in Script Properties only.
 // New items go to the moodle_inbox tab; nothing becomes a task until Bahr accepts it in the app.
+// The announcements are also saved into the course's Moodle folder in Drive (see "לוח הודעות → Drive" below),
+// so Drive stays current even while Bahr's laptop (which runs moodle-dl for all other files) is off.
 
 const MOODLE_SITE = 'https://moodle26.technion.ac.il';
 const MAX_TEXT = 40000; // full message text (a Sheet cell holds up to 50,000 characters)
 
-function moodle_(fn, params, token) {
+// moodle-dl's User-Agent (the Moodle mobile app). Only used if Moodle refuses the script's own requests.
+const MOODLE_APP_UA = 'Mozilla/5.0 (Linux; Android 7.1.1; Moto G Play Build/NPIS26.48-43-2; wv) AppleWebKit/537.36' +
+  ' (KHTML, like Gecko) Version/4.0 Chrome/71.0.3578.99 Mobile Safari/537.36 MoodleMobile';
+
+/**
+ * One Moodle web-service call. Every parameter is sent as text: UrlFetchApp sends a JS number such as 550 as
+ * "550.0", which Moodle rejects as an invalid integer ("invalidparameter") - that is why the forum calls, the only
+ * ones with numbers in them, failed. opts.ua = also send the Moodle app's User-Agent.
+ */
+function moodle_(fn, params, token, opts) {
   token = token || PropertiesService.getScriptProperties().getProperty('MOODLE_TOKEN');
   if (!token) throw new Error('no Moodle token');
-  const payload = Object.assign({ wstoken: token, wsfunction: fn, moodlewsrestformat: 'json',
-    moodlewssettingfilter: 'true', moodlewssettingfileurl: 'true' }, params || {});
-  const res = UrlFetchApp.fetch(MOODLE_SITE + '/webservice/rest/server.php',
-    { method: 'post', payload: payload, muteHttpExceptions: true });
+  const payload = { wstoken: token, wsfunction: fn, moodlewsrestformat: 'json',
+    moodlewssettingfilter: 'true', moodlewssettingfileurl: 'true' };
+  Object.keys(params || {}).forEach(function (k) {
+    const v = params[k];
+    if (v === null || v === undefined) return;
+    payload[k] = typeof v === 'number' && Number.isInteger(v) ? v.toFixed(0)
+      : typeof v === 'boolean' ? (v ? '1' : '0') : String(v);
+  });
+  const req = { method: 'post', payload: payload, muteHttpExceptions: true };
+  if (opts && opts.ua) req.headers = { 'User-Agent': MOODLE_APP_UA };
+  const res = UrlFetchApp.fetch(MOODLE_SITE + '/webservice/rest/server.php', req);
   if (res.getResponseCode() !== 200) throw new Error('Moodle HTTP ' + res.getResponseCode());
   const j = JSON.parse(res.getContentText());
   if (j && j.exception) {
@@ -835,28 +853,30 @@ function moodle_(fn, params, token) {
   return j;
 }
 
+/** Request options that worked for the forum calls (remembered by forumDiscussions_). */
+function forumOpts_() {
+  return { ua: PropertiesService.getScriptProperties().getProperty('MOODLE_FORUM_VARIANT3') === '1' };
+}
+
 /**
- * Discussions of one forum, newest first (Moodle's default order: latest post first).
- * Technion's Moodle (5.2) rejects page sizes above 10 with "invalidparameter", so we ask exactly like moodle-dl
- * does ({forumid, page, perpage: 10}) and read as many pages as needed. If that is refused, a few other parameter
- * sets are tried; the one that works is remembered.
+ * Discussions of one forum, newest first (Moodle's default order: latest post first), asked exactly like moodle-dl
+ * ({forumid, page, perpage: 10}), reading as many pages as needed. If Moodle refuses, the request is repeated with
+ * the Moodle app's User-Agent; the variant that works is remembered.
  */
 const FORUM_PAGE_SIZE = 10;
 function forumDiscussions_(forumId, wanted) {
   const props = PropertiesService.getScriptProperties();
-  const variants = [ // extra parameters for mod_forum_get_forum_discussions, tried in order
-    { },                 // = moodle-dl
-    { sortorder: 1 },    // last post, newest first
-    { sortorder: 3 },    // created, newest first
-    { sortorder: -1 },
+  const variants = [ // request options for mod_forum_get_forum_discussions, tried in order
+    { },                 // the script's own request
+    { ua: true },        // + the Moodle app's User-Agent, like moodle-dl
   ];
   const fetchPage = function (i, page) {
-    const p = Object.assign({ forumid: forumId, page: page, perpage: FORUM_PAGE_SIZE }, variants[i]);
-    return moodle_('mod_forum_get_forum_discussions', p);
+    const p = { forumid: forumId, page: page, perpage: FORUM_PAGE_SIZE };
+    return moodle_('mod_forum_get_forum_discussions', p, null, variants[i]);
   };
-  const known = props.getProperty('MOODLE_FORUM_VARIANT2');
+  const known = props.getProperty('MOODLE_FORUM_VARIANT3');
   const order = (known !== null && variants[Number(known)] ? [Number(known)] : [])
-    .concat(variants.map(function (v, i) { return i; }));
+    .concat(variants.map(function (v, i) { return i; }).filter(function (i) { return String(i) !== known; }));
   const errors = [];
   for (let k = 0; k < order.length; k++) {
     const i = order[k];
@@ -865,7 +885,7 @@ function forumDiscussions_(forumId, wanted) {
       if (errors.length < 3) errors.push(JSON.stringify(variants[i]) + ': ' + err.message);
       continue;
     }
-    if (known !== String(i)) props.setProperty('MOODLE_FORUM_VARIANT2', String(i));
+    if (known !== String(i)) props.setProperty('MOODLE_FORUM_VARIANT3', String(i));
     let all = first.discussions || [];
     for (let page = 1; all.length >= page * FORUM_PAGE_SIZE && all.length < (wanted || 20); page++) {
       const more = fetchPage(i, page).discussions || [];
@@ -926,6 +946,233 @@ function driveAnnouncements_(course) {
     }
   });
   return out;
+}
+
+/* ---------------------------------------------------- לוח הודעות → Drive ---- */
+// Every check also saves the announcements into Drive, exactly where and how moodle-dl (the laptop sync) saves them:
+//   <course Moodle folder>/<section>/<forum name>/<yy-mm-dd subject>/[<post id>] <author>.md   (+ attachments)
+// so the Drive copy stays current while the laptop is off. Discussions already in Drive are left as they are; when
+// Moodle reports one as changed (edited / new reply) its files are updated. The laptop sync (moodle_sync.py) never
+// overwrites anything inside these folders and skips posts that are already there.
+
+const BOARD_STATE_KEY = 'MOODLE_BOARD_SAVED';      // {discussion id: Moodle 'modified' time when it was saved}
+const BOARD_MAX_ATTACHMENT = 45 * 1024 * 1024;     // UrlFetchApp's limit is 50 MB; bigger files come from the laptop
+
+const HTML_ENTITIES_ = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', shy: '­',
+  ndash: '–', mdash: '—', hellip: '…', laquo: '«', raquo: '»', lsquo: '‘',
+  rsquo: '’', ldquo: '“', rdquo: '”', middot: '·', bull: '•', times: '×',
+  lrm: '‎', rlm: '‏', zwj: '‍', zwnj: '‌' };
+function htmlUnescape_(s) {
+  return String(s).replace(/&(#\d+|#[xX][0-9a-fA-F]+|[a-zA-Z][a-zA-Z0-9]*);/g, function (m, e) {
+    if (e.charAt(0) === '#') {
+      const n = /^#[xX]/.test(e) ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10);
+      return n > 0 && n <= 0x10FFFF ? String.fromCodePoint(n) : m;
+    }
+    return Object.prototype.hasOwnProperty.call(HTML_ENTITIES_, e) ? HTML_ENTITIES_[e] : m;
+  });
+}
+
+/** moodle-dl's PathTools.to_valid_name (as on Windows), so the script and moodle-dl use the same names. */
+function toValidName_(name, isFile) {
+  if (name === null || name === undefined) return name;
+  let s = htmlUnescape_(String(name)).normalize('NFKC');
+  s = s.replace(/[\n\r\t]/g, ' ').replace(/­/g, '');
+  while (s.indexOf('  ') >= 0) s = s.split('  ').join(' ');
+  s = sanitizeFilename_(s);
+  s = s.replace(/^[. ]+|[. ]+$/g, '').trim();
+  return truncateName_(s, isFile, 200);
+}
+
+/** yt-dlp's sanitize_filename in its default mode (used by moodle-dl): forbidden characters → full-width look-alikes. */
+function sanitizeFilename_(s) {
+  if (s === '') return '';
+  s = s.replace(/[0-9]+(?::[0-9]+)+/g, function (m) { return m.replace(/:/g, '_'); }); // times: 12:30 → 12_30
+  let out = '';
+  Array.from(s).forEach(function (ch) {
+    const code = ch.codePointAt(0);
+    if (ch === '\n') out += '\0 ';
+    else if ('"*:<>?|/\\'.indexOf(ch) >= 0) {
+      out += ch === '/' ? '⧸' : ch === '\\' ? '⧹' : String.fromCharCode(code + 0xFEE0);
+    } else if (code >= 32 && code !== 127) out += ch;
+  });
+  out = out.replace(/(\0[^\n])(?:(?=\1)[^\n][^\n])+/g, '$1');
+  out = out.replace(/^\0[^\n](?:\0[^\n]|[ _-])*|(?:\0[^\n]|[ _-])*\0[^\n]$/g, '');
+  return out.replace(/\0/g, '') || '_';
+}
+
+function truncateName_(s, isFile, max) {
+  const chars = Array.from(s);
+  if (chars.length <= max) return s;
+  const cut = function (arr, n) { return arr.slice(0, n - 1).join('') + '…'; };
+  const dot = s.lastIndexOf('.');
+  const ext = isFile && dot >= 0 ? s.slice(dot + 1) : '';
+  if (!ext || ext.length > 20) return cut(chars, max);
+  return cut(Array.from(s.slice(0, dot)), max - ext.length - 1) + '.' + ext;
+}
+
+/** A post's HTML as readable Markdown (paragraphs, bold, italics, links, lists). */
+function htmlToMarkdown_(html) {
+  let s = String(html || '').replace(/\r\n?|\n/g, ' ');
+  s = s.replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi, '');
+  s = s.replace(/<a\b[^>]*?href\s*=\s*"([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi, function (m, href, text) {
+    const t = text.replace(/<[^>]+>/g, '').trim();
+    href = htmlUnescape_(href);
+    return t && t !== href ? '[' + t + '](' + href + ')' : href;
+  });
+  s = s.replace(/<br\s*\/?>/gi, '\n');
+  s = s.replace(/<\/?(strong|b)(\s[^>]*)?>/gi, '**').replace(/<\/?(em|i)(\s[^>]*)?>/gi, '_');
+  s = s.replace(/<li\b[^>]*>/gi, '\n* ').replace(/<h([1-6])\b[^>]*>/gi, function (m, n) {
+    return '\n\n' + new Array(Number(n) + 1).join('#') + ' ';
+  });
+  s = s.replace(/<\/?(p|div|ul|ol|blockquote|table|tr|h[1-6])\b[^>]*>/gi, '\n\n').replace(/<\/t[dh]>/gi, ' | ');
+  s = htmlUnescape_(s.replace(/<[^>]+>/g, '')).replace(/ /g, ' ');
+  s = s.replace(/\*\*\s*\*\*/g, '').split('\n').map(function (line) { return line.replace(/\s+/g, ' ').trim(); }).join('\n');
+  return s.replace(/\n{3,}/g, '\n\n').trim();
+}
+
+function boardState_() {
+  try { return JSON.parse(PropertiesService.getScriptProperties().getProperty(BOARD_STATE_KEY) || '{}'); }
+  catch (err) { return {}; }
+}
+function saveBoardState_(state) {
+  let keys = Object.keys(state);
+  if (keys.length > 300) { // a Script Property holds 9 KB: forget the oldest discussions
+    keys.sort(function (a, b) { return state[b] - state[a]; }).slice(300).forEach(function (k) { delete state[k]; });
+  }
+  PropertiesService.getScriptProperties().setProperty(BOARD_STATE_KEY, JSON.stringify(state));
+}
+function modifiedOf_(d) { return Math.max(Number(d.timemodified) || 0, Number(d.modified) || 0); }
+
+// {first post id: discussion id} of announcements read from Moodle, so that the Drive-copy fallback (which only
+// knows the post id from the file name, ref "post:file<id>") doesn't add a message the inbox already has.
+const FIRST_POSTS_KEY = 'MOODLE_FIRST_POSTS';
+function firstPosts_() {
+  try { return JSON.parse(PropertiesService.getScriptProperties().getProperty(FIRST_POSTS_KEY) || '{}'); }
+  catch (err) { return {}; }
+}
+function saveFirstPosts_(map) {
+  const keys = Object.keys(map);
+  if (keys.length > 400) keys.sort(function (a, b) { return Number(b) - Number(a); }).slice(400)
+    .forEach(function (k) { delete map[k]; });
+  PropertiesService.getScriptProperties().setProperty(FIRST_POSTS_KEY, JSON.stringify(map));
+}
+
+function childFolder_(parent, name) {
+  const it = parent.getFoldersByName(name);
+  return it.hasNext() ? it.next() : parent.createFolder(name);
+}
+
+/** The course forum's folder in Drive: the one moodle-dl made (<section>/<forum name>), else a new one there. */
+function boardFolder_(course, forum) {
+  const root = driveFolderByPath_(course.moodle_folder);
+  if (!root) throw new Error('Drive folder not found: ' + course.moodle_folder);
+  const name = toValidName_(forum.name, false);
+  const sections = root.getFolders();
+  while (sections.hasNext()) {
+    const it = sections.next().getFoldersByName(name);
+    if (it.hasNext()) return it.next();
+  }
+  let section = null; // not in Drive yet: put it in the forum's section, as moodle-dl would
+  (moodle_('core_course_get_contents', { courseid: course.moodle_course_id }) || []).forEach(function (s) {
+    (s.modules || []).forEach(function (m) { if (String(m.id) === String(forum.cmid)) section = s.name; });
+  });
+  if (section === null) throw new Error('forum ' + forum.cmid + ' is not on the course page');
+  return childFolder_(childFolder_(root, toValidName_(section, false)), name);
+}
+
+/** What is already in a forum folder: {posts: {post id: folder}, folders: {name: folder}, count: {folder id: posts}}. */
+function boardIndex_(board) {
+  const idx = { posts: {}, folders: {}, count: {} };
+  const ds = board.getFolders();
+  while (ds.hasNext()) {
+    const d = ds.next();
+    idx.folders[d.getName()] = d;
+    let n = 0;
+    const fs = d.getFiles();
+    while (fs.hasNext()) {
+      const m = /^\[(\d+)\]/.exec(fs.next().getName());
+      if (m) { idx.posts[m[1]] = d; n++; }
+    }
+    idx.count[d.getId()] = n;
+  }
+  return idx;
+}
+
+function headerOf_(res, name) {
+  const h = res.getHeaders() || {};
+  const k = Object.keys(h).filter(function (x) { return x.toLowerCase() === name.toLowerCase(); })[0];
+  return k ? String(h[k]) : '';
+}
+
+/** Writes one discussion's posts (+ attachments) into its Drive folder. Returns the number of files written. */
+function saveDiscussion_(board, idx, d, token, acc) {
+  const did = d.discussion || d.id;
+  const name = toValidName_(Utilities.formatDate(new Date(Number(d.created) * 1000), 'UTC', 'yy-MM-dd') + ' ' +
+    (d.subject || ''), false);
+  const res = moodle_('mod_forum_get_discussion_posts',
+    { discussionid: did, sortby: 'modified', sortdirection: 'ASC' }, null, forumOpts_());
+  const posts = ((res && res.posts) || []).filter(function (p) { return !p.isdeleted; });
+  if (!posts.length) return 0;
+  // the folder that already holds this discussion (moodle-dl may have named it a bit differently), else by name
+  let folder = idx.posts[String(d.id)] || idx.folders[name];
+  if (!folder) { folder = board.createFolder(name); idx.folders[name] = folder; }
+  let written = 0;
+  posts.forEach(function (p) {
+    let base = toValidName_('[' + p.id + '] ' + ((p.author && p.author.fullname) || 'Unknown'), false);
+    if (p.parentid) base = toValidName_(base + ' response to [' + p.parentid + ']', false);
+    const fileName = toValidName_(base, true) + '.md';
+    const text = htmlToMarkdown_(p.message);
+    const same = folder.getFilesByName(fileName);
+    const existing = same.hasNext() ? same.next() : null;
+    if (existing) {
+      if (text && existing.getBlob().getDataAsString('UTF-8') !== text) { existing.setContent(text); written++; }
+    } else if (text && !idx.posts[String(p.id)]) {
+      folder.createFile(fileName, text, 'text/markdown');
+      idx.posts[String(p.id)] = folder;
+      written++;
+    }
+    (p.attachments || []).forEach(function (a) {
+      const an = toValidName_(a.filename || '', true);
+      if (!an || an === '_' || folder.getFilesByName(an).hasNext()) return;
+      if (Number(a.filesize) > BOARD_MAX_ATTACHMENT) { acc.tooBig++; return; }
+      let url = String(a.fileurl || a.url || '');
+      if (!url) return;
+      if (url.indexOf('/webservice/') < 0) url = url.replace('/pluginfile.php/', '/webservice/pluginfile.php/');
+      url += (url.indexOf('?') >= 0 ? '&' : '?') + 'token=' + encodeURIComponent(token);
+      const r = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+      if (r.getResponseCode() !== 200 || /json/i.test(headerOf_(r, 'Content-Type'))) {
+        throw new Error('attachment "' + a.filename + '": HTTP ' + r.getResponseCode());
+      }
+      folder.createFile(r.getBlob().setName(an));
+      written++;
+    });
+  });
+  return written;
+}
+
+/** Saves a course's new / changed announcements into Drive (called by moodleCheck_ with the discussions it read). */
+function boardSync_(course, forum, discussions, acc) {
+  const changed = discussions.filter(function (d) {
+    return acc.state[String(d.discussion || d.id)] !== modifiedOf_(d);
+  });
+  if (!changed.length) return;
+  const token = PropertiesService.getScriptProperties().getProperty('MOODLE_TOKEN');
+  const board = boardFolder_(course, forum);
+  const idx = boardIndex_(board);
+  changed.forEach(function (d) {
+    const key = String(d.discussion || d.id);
+    const have = idx.posts[String(d.id)];
+    try {
+      if (acc.state[key] === undefined && have && idx.count[have.getId()] >= (Number(d.numreplies) || 0) + 1) {
+        acc.state[key] = modifiedOf_(d); // already complete in Drive (saved by the laptop sync)
+        return;
+      }
+      acc.saved += saveDiscussion_(board, idx, d, token, acc);
+      acc.state[key] = modifiedOf_(d);
+    } catch (err) {
+      acc.errors.push((course.short_he || course.slug) + ' "' + (d.subject || key) + '": ' + err.message);
+    }
+  });
 }
 
 function refStored_(ref) {
@@ -1003,22 +1250,26 @@ function moodleCheck_() {
       const c = courses.filter(function (x) { return String(x.moodle_course_id) === String(f.course); })[0];
       if (!c) return;
       const isNews = f.type === 'news' || String(f.cmid) === String(c.moodle_news_forum_id);
-      if (isNews && (!forumOf[c.slug] || f.type === 'news')) forumOf[c.slug] = f.id;
+      if (isNews && (!forumOf[c.slug] || f.type === 'news')) forumOf[c.slug] = f;
     });
   } catch (err) { errors.push('forums: ' + err.message); }
 
+  const board = { state: boardState_(), saved: 0, tooBig: 0, errors: [] }; // announcements → Drive
+  const firstPost = firstPosts_();
   courses.forEach(function (c) {
-    const forumId = forumOf[c.slug];
+    const forum = forumOf[c.slug];
     try {
       let res;
       try {
-        if (!forumId) throw new Error('no news forum found');
-        res = forumDiscussions_(forumId, 20);
+        if (!forum) throw new Error('no news forum found');
+        res = forumDiscussions_(forum.id, 20);
       } catch (apiErr) {
         // API refused → use the copies moodle-dl saved in Drive (only as fresh as the last moodle-dl run)
         viaDrive.push((c.short_he || c.slug) + ': ' + apiErr.message);
         driveAnnouncements_(c).forEach(function (p) {
           if (taskByRef[p.ref]) return;
+          const did = firstPost[p.ref.replace('post:file', '')]; // already in the inbox, read from Moodle itself
+          if (did && (inboxRefs['post:' + did] || taskByRef['post:' + did])) return;
           add({
             course: c.slug, kind: 'announcement', moodle_ref: p.ref, posted_at: p.posted, title: p.title,
             author: p.author, text: p.text.slice(0, MAX_TEXT),
@@ -1030,7 +1281,9 @@ function moodleCheck_() {
       (res.discussions || []).forEach(function (d) {
         const did = d.discussion || d.id;
         const ref = 'post:' + did;
-        if (taskByRef[ref]) return;
+        const fileRef = 'post:file' + d.id; // the same message, read earlier from the Drive copy (d.id = first post)
+        firstPost[String(d.id)] = String(did);
+        if (taskByRef[ref] || taskByRef[fileRef] || inboxRefs[fileRef]) return;
         const posted = new Date((d.created || d.timemodified) * 1000);
         const text = plain_(d.message);
         add({
@@ -1040,8 +1293,11 @@ function moodleCheck_() {
           url: MOODLE_SITE + '/mod/forum/discuss.php?d=' + did,
         });
       });
+      try { boardSync_(c, forum, res.discussions || [], board); }
+      catch (err) { board.errors.push((c.short_he || c.slug) + ': ' + err.message); }
     } catch (err) { errors.push((c.short_he || c.slug) + ': ' + err.message); }
   });
+  try { saveBoardState_(board.state); saveFirstPosts_(firstPost); } catch (err) { board.errors.push('state: ' + err.message); }
 
   try {
     const params = {};
@@ -1075,11 +1331,15 @@ function moodleCheck_() {
   } catch (err) { errors.push('assignments: ' + err.message); }
 
   if (added) dedupeInbox_();
-  const status = errors.length ? 'error: ' + errors.join(' | ')
-    : 'ok · ' + added + ' new' + (viaDrive.length ? ' · via Drive copy · Moodle API: ' + viaDrive[0].slice(0, 300) : '');
+  const drive = (board.saved ? ' · Drive: ' + board.saved + ' file(s) saved' : '') +
+    (board.tooBig ? ' · Drive: ' + board.tooBig + ' attachment(s) over 45 MB left for the laptop sync' : '') +
+    (board.errors.length ? ' · saving to Drive failed: ' + board.errors.join(' | ').slice(0, 300) : '');
+  const status = errors.length ? 'error: ' + errors.join(' | ') + drive
+    : 'ok · ' + added + ' new' + drive +
+      (viaDrive.length ? ' · via Drive copy · Moodle API: ' + viaDrive[0].slice(0, 300) : '');
   setSetting_('moodle_last_check', now_());
   setSetting_('moodle_status', status);
-  return { status: status, added: added };
+  return { status: status, added: added, drive_saved: board.saved, drive_errors: board.errors };
 }
 
 /* ------------------------------------------------------------- AI review ---- */
@@ -1510,12 +1770,17 @@ function scheduledSync() {
  */
 function debugMoodle() {
   const log = function (label, v) { Logger.log(label + ': ' + JSON.stringify(v).slice(0, 1500)); };
+  try { // how UrlFetchApp sends numbers (the old forum calls sent them as JS numbers)
+    const echo = UrlFetchApp.fetch('https://httpbin.org/post',
+      { method: 'post', payload: { number: 550, text: '550' }, muteHttpExceptions: true });
+    log('UrlFetchApp sends (number 550 / text "550") as', JSON.parse(echo.getContentText()).form);
+  } catch (err) { log('echo test skipped', err.message); }
   try {
     const info = moodle_('core_webservice_get_site_info', {});
     const fns = (info.functions || []).map(function (f) { return f.name; });
     log('site', { user: info.fullname, release: info.release, version: info.version });
     log('functions available', ['mod_forum_get_forums_by_courses', 'mod_forum_get_forum_discussions',
-      'mod_forum_get_forum_discussions_paginated', 'mod_assign_get_assignments', 'core_course_get_contents']
+      'mod_forum_get_discussion_posts', 'mod_assign_get_assignments', 'core_course_get_contents']
       .map(function (n) { return n + '=' + (fns.indexOf(n) >= 0); }));
   } catch (err) { log('site info FAILED', err.message); return; }
   const courses = readTable_('courses');
@@ -1529,10 +1794,19 @@ function debugMoodle() {
   const news = forums.filter(function (f) { return f.type === 'news'; })[0];
   if (!news) { log('no news forum found', ''); return; }
   try {
-    PropertiesService.getScriptProperties().deleteProperty('MOODLE_FORUM_VARIANT2');
+    PropertiesService.getScriptProperties().deleteProperty('MOODLE_FORUM_VARIANT3');
     const r = forumDiscussions_(news.id, 5);
-    log('discussions OK (variant ' + PropertiesService.getScriptProperties().getProperty('MOODLE_FORUM_VARIANT2') + ')',
+    const v = PropertiesService.getScriptProperties().getProperty('MOODLE_FORUM_VARIANT3');
+    log('discussions OK (' + (v === '1' ? 'needed the Moodle app User-Agent' : 'plain request') + ')',
       (r.discussions || []).map(function (d) { return { id: d.id, discussion: d.discussion, subject: d.subject, created: d.created }; }));
+    const d0 = (r.discussions || [])[0];
+    if (d0) {
+      const p = moodle_('mod_forum_get_discussion_posts',
+        { discussionid: d0.discussion || d0.id, sortby: 'modified', sortdirection: 'ASC' }, null, forumOpts_());
+      log('posts of "' + d0.subject + '"', (p.posts || []).map(function (x) {
+        return { id: x.id, author: x.author && x.author.fullname, attachments: (x.attachments || []).length };
+      }));
+    }
   } catch (err) { log('discussions FAILED', err.message); }
   try {
     const c = courses.filter(function (x) { return x.slug === 'databases'; })[0] || courses[0];

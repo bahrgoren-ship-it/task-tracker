@@ -94,6 +94,9 @@ Filled every ~15 min by the backend from Technion Moodle (`moodle26.technion.ac.
 Properties): `kind` = `announcement` (a post on a course's לוח הודעות, `moodle_ref` = `post:<discussion id>`),
 `assignment` (an assignment with a due date, `assign:<id>`), or `date_change` (an assignment Bahr already has as a
 task whose Moodle due date differs; `assign:<id>@<new date>`, `task_id` = that task).
+If the Moodle API refuses, announcements are read from the Drive copy instead (`moodle_ref` = `post:file<first post id>`,
+Markdown text, date only). Each check also saves the announcements themselves into Drive
+(`<course moodle_folder>/<section>/לוח הודעות/<yy-mm-dd subject>/[<post id>] <author>.md` + attachments).
 
 **A message is never a task by itself.** After each check, Gemini (key `GEMINI_KEY` in Script Properties) reads every
 new `announcement`/`assignment` in full, together with Bahr's existing tasks and the open suggestions of other

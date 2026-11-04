@@ -27,7 +27,11 @@ Bahr's task tracker (homework first; may grow to all tasks): a Hebrew (RTL) inst
   for removed ones, `DEFAULT_SETTINGS` for new settings), bump `SCHEMA_VERSION`, update `SCHEMA.md` and `demo.js`.
   The backend migrates the Sheet by itself.
 - Never put the API key, the Web-app URL, the Moodle token or the Gemini key in the repo (the repo is public).
-- Technion's Moodle (5.2) rejects `mod_forum_get_forum_discussions` with `perpage` > 10 — page through 10 at a time.
+- Send every Moodle web-service parameter as text: UrlFetchApp sends a JS number like 550 as "550.0", which Moodle
+  rejects (`invalidparameter`). `moodle_()` does this for you. (This, not the page size, is why the forum calls failed.)
+- The Moodle check also saves each course's לוח הודעות into Drive (`boardSync_`), with moodle-dl's exact folder/file
+  names (`toValidName_` = moodle-dl's `PathTools.to_valid_name`, Windows rules). Bahr's laptop sync (moodle-dl +
+  `Technion Studies/.ai/moodle-sync/moodle_sync.py`) never overwrites inside those folders and skips posts already there.
 - Changing `Code.gs` only takes effect after Bahr pastes it into the Apps Script editor and creates a new
   deployment version (see SETUP.md) — tell him when that's needed.
 - Test UI changes in demo mode (settings → "נסה במצב הדגמה") on phone, iPad and desktop widths.
@@ -44,5 +48,5 @@ Bahr's task tracker (homework first; may grow to all tasks): a Hebrew (RTL) inst
 ## Roadmap
 1. ✅ Sheet + Notion import. 2. ✅ Tasks screen + time tracking (estimate, total, stopwatch/pomodoro).
 3. ✅ Planner + Google Calendar sync (deadlines one-way, work blocks two-way). 4. ✅ Moodle inbox (announcements +
-assignments, every 15 min) + AI review (Gemini suggests tasks not already covered); ⏳ Windows Task Scheduler for the file sync (moodle-dl) on Bahr's PC. 5. AI procedures.
+assignments, every 15 min) + AI review (Gemini suggests tasks not already covered); ✅ Windows Task Scheduler for the file sync (moodle-dl) on Bahr's PC; ✅ announcements saved to Drive from the cloud. 5. AI procedures.
 Tests (Playwright + fake Apps Script services) are not in the repo; keep behaviour covered when changing things.
