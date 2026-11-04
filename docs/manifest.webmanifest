@@ -4,9 +4,11 @@
   "description": "מעקב משימות ושיעורי בית — טכניון",
   "lang": "he",
   "dir": "rtl",
+  "id": "./",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
+  "orientation": "any",
   "background_color": "#F1F3F6",
   "theme_color": "#F1F3F6",
   "icons": [

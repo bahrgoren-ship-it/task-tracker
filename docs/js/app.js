@@ -516,6 +516,9 @@ function openSettings() {
         <button type="button" class="btn primary" data-connect>חיבור</button>
         <button type="button" class="btn ghost" data-demo>נסה במצב הדגמה</button>
       </div>
+      <hr>
+      <h3 class="sub-h">מסך הבית</h3>
+      <div id="installBox">${installHtml()}</div>
       ${store.configured ? `<hr>
         <dl class="info">
           <div><dt>מצב</dt><dd>${store.isDemo ? 'הדגמה (נתונים רק במכשיר הזה)' : 'מחובר לגיליון'}</dd></div>
@@ -566,7 +569,10 @@ function openSettings() {
   const msg = $('#connMsg', dlg);
   dlg.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', () => dlg.close()));
   $('[data-connect]', dlg).addEventListener('click', async () => {
-    const url = form.url.value.trim(), key = form.key.value.trim();
+    let url = form.url.value.trim(), key = form.key.value.trim();
+    // a whole setup link pasted into the address field (e.g. in the iPad home-screen app): take both from it
+    const link = /[?&]api=([^&]+)&key=([^&]+)/.exec(url);
+    if (link) { url = decodeURIComponent(link[1]); key = decodeURIComponent(link[2]); }
     if (!/^https:\/\/script\.google(usercontent)?\.com\//.test(url) || !key) {
       msg.textContent = 'צריך כתובת שמתחילה ב-https://script.google.com/… ומפתח.'; msg.className = 'msg err'; return;
     }
@@ -582,6 +588,7 @@ function openSettings() {
       msg.className = 'msg err';
     }
   });
+  bindInstall(dlg);
   $('[data-demo]', dlg).addEventListener('click', () => {
     store.setConfig({ url: 'demo', key: 'demo' }); dlg.close(); store.refresh(); toast('מצב הדגמה — הנתונים לא נשמרים בגיליון');
   });
@@ -782,6 +789,64 @@ function renderTimerSheet() {
 /* ------------------------------------------------------------ toast ---- */
 
 let toastTimer;
+
+/* ------------------------------------------------- add to home screen ---- */
+// Android (Chrome / Edge / Samsung): the browser's own install prompt, kept from "beforeinstallprompt".
+// iPhone / iPad: no prompt exists — Safari's Share → "הוסף למסך הבית". The home-screen app there keeps its own
+// storage, so it asks to connect once: paste the setup link (copied here) into the address field.
+let installPrompt = null;
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  installPrompt = e;
+  const box = document.querySelector('#installBox');
+  if (box) { box.innerHTML = installHtml(); bindInstall(box); }
+});
+window.addEventListener('appinstalled', () => { installPrompt = null; toast('האפליקציה נוספה למסך הבית'); });
+
+const isStandalone = () => window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+const isApple = () => /iPad|iPhone|iPod/.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
+
+function installHtml() {
+  if (isStandalone()) return '<p class="hint small">✓ האפליקציה פתוחה ממסך הבית.</p>';
+  if (installPrompt) {
+    return `<button type="button" class="btn primary" data-install>הוסף למסך הבית</button>
+      <p class="hint small">האפליקציה תיפתח כמו אפליקציה רגילה, בלי שורת הכתובת, ותעבוד גם בלי אינטרנט.</p>`;
+  }
+  if (isApple()) {
+    const link = store.configured && !store.isDemo
+      ? `${location.origin}${location.pathname}?api=${encodeURIComponent(store.cfg.url)}&key=${encodeURIComponent(store.cfg.key)}` : '';
+    return `<ol class="install-steps">
+        <li>פתח את האפליקציה ב-Safari.</li>
+        <li>הקש על כפתור השיתוף <span aria-hidden="true">⬆️</span> (באייפד: למעלה, ליד שורת הכתובת).</li>
+        <li>בחר „הוסף למסך הבית” ← „הוסף”.</li>
+        ${link ? '<li>פתח את האפליקציה מהמסך הבית. היא תבקש חיבור פעם אחת: הדבק בשדה „כתובת השרת” את קישור ההגדרה ולחץ „חיבור”.</li>' : ''}
+      </ol>
+      ${link ? '<button type="button" class="btn ghost" data-copylink>העתק קישור הגדרה</button>' : ''}`;
+  }
+  return `<ol class="install-steps">
+      <li>ב-Chrome הקש על התפריט <b>⋮</b> (למעלה).</li>
+      <li>בחר „הוסף למסך הבית” או „התקן אפליקציה”.</li>
+    </ol>
+    <p class="hint small">אם האפשרות לא מופיעה, רענן את הדף ונסה שוב בעוד רגע.</p>`;
+}
+
+function bindInstall(root) {
+  root.querySelector('[data-install]')?.addEventListener('click', async () => {
+    const p = installPrompt;
+    if (!p) return;
+    p.prompt();
+    const { outcome } = await p.userChoice.catch(() => ({}));
+    installPrompt = null;
+    if (outcome !== 'accepted') toast('אפשר להוסיף מאוחר יותר מכאן');
+    const box = document.querySelector('#installBox');
+    if (box) { box.innerHTML = installHtml(); bindInstall(box); }
+  });
+  root.querySelector('[data-copylink]')?.addEventListener('click', async () => {
+    const link = `${location.origin}${location.pathname}?api=${encodeURIComponent(store.cfg.url)}&key=${encodeURIComponent(store.cfg.key)}`;
+    try { await navigator.clipboard.writeText(link); toast('הקישור הועתק — הדבק אותו באפליקציה שבמסך הבית'); }
+    catch { prompt('העתק את הקישור:', link); }
+  });
+}
 function toast(text, action) {
   const el = $('#toast');
   el.innerHTML = `<span>${esc(text)}</span>${action ? `<button type="button">${esc(action.label)}</button>` : ''}`;
