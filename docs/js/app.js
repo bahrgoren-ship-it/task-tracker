@@ -4,6 +4,7 @@ import { bucketOf, dueLabel, todayIL, addDays, shortDate, weekday, fmtMinutes, f
 import * as timer from './timer.js';
 import * as planner from './planner.js';
 import * as inbox from './inbox.js';
+import { aiState, aiText, moodleState, moodleText, calendarState, calendarText, noticeHtml, friendlyError, dismiss, whenLabel } from './notices.js';
 
 const SHEET_URL = 'https://docs.google.com/spreadsheets/d/10qLYln2zUiMo7dEI3xZ8pj4ncGX7TRmATZNuZfvUfWM/edit';
 
@@ -41,7 +42,17 @@ function boot() {
 
   store.subscribe(render);
   $('#settingsBtn').addEventListener('click', openSettings);
-  $('#syncPill').addEventListener('click', () => (store.configured ? store.refresh() : openSettings()));
+  $('#syncPill').addEventListener('click', () => {
+    if (!store.configured) return openSettings();
+    if (store.status === 'error') toast(friendlyError(store.error));
+    store.refresh();
+  });
+  // buttons inside notices (any screen): "להגדרות", and ✕ = hide this notice until the problem changes
+  document.addEventListener('click', (e) => {
+    if (e.target.closest('[data-open-settings]')) { e.preventDefault(); openSettings(); return; }
+    const x = e.target.closest('[data-dismiss]');
+    if (x) { dismiss(x.dataset.dismiss); x.closest('.notice')?.remove(); }
+  });
   $('#addBtn').addEventListener('click', () => openEditor(null));
   $('#filters').addEventListener('click', onFilterClick);
   $('#main').addEventListener('click', onMainClick);
@@ -151,7 +162,7 @@ function renderSync() {
   if (store.isDemo) text += ' · הדגמה';
   pill.className = `sync-pill ${cls}`;
   pill.innerHTML = `<i></i>${esc(text)}`;
-  pill.title = store.error ? `שגיאה: ${store.error}` : (store.lastSync ? `סונכרן לאחרונה: ${store.lastSync}` : '');
+  pill.title = store.status === 'error' ? friendlyError(store.error) : (store.lastSync ? `סונכרן לאחרונה: ${store.lastSync}` : '');
 }
 
 function activeCourses() {
@@ -443,6 +454,49 @@ function prettyUrl(u) {
 
 /* -------------------------------------------------------- settings ---- */
 
+// A status line in settings: what it means, and the original text under "פרטים" when something is wrong.
+function statusLine(st, text, extra) {
+  if (st.kind === 'error' || st.kind === 'waiting' || st.kind === 'off' || (st.kind === 'ok' && st.drive)) {
+    return noticeHtml({ tone: st.kind === 'error' ? 'err' : st.kind === 'off' ? 'warn' : 'info', title: text.title,
+      body: [text.body, extra].filter(Boolean).join(' '), tech: st.tech || '' });
+  }
+  return `<p class="hint small">✓ ${esc(text.title)}${text.body ? ` · ${esc(text.body)}` : ''}${extra ? ` · ${esc(extra)}` : ''}</p>`;
+}
+
+function calendarSettingsHtml() {
+  if (store.apiVersion && store.apiVersion < 5) {
+    return `<p class="hint small">כדי לבחור לאיזה יומן נכנסים הבלוקים צריך לעדכן את השרת (Apps Script) — ראה SETUP.md.</p>
+      <label class="check"><input type="checkbox" data-set="sync_blocks_to_calendar" ${store.setting('sync_blocks_to_calendar') === 'TRUE' ? 'checked' : ''}> בלוקי עבודה מאושרים ביומן „משימות – בלוקי עבודה”</label>
+      <label class="check"><input type="checkbox" data-set="sync_deadlines_to_calendar" ${store.setting('sync_deadlines_to_calendar') === 'TRUE' ? 'checked' : ''}> תאריכי הגשה ביומן „משימות – הגשות”</label>`;
+  }
+  const on = store.setting('sync_blocks_to_calendar') === 'TRUE';
+  const name = store.setting('blocks_calendar_name', 'לימודים');
+  const st = calendarState();
+  return `<label class="check"><input type="checkbox" data-set="sync_blocks_to_calendar" ${on ? 'checked' : ''}> בלוקי עבודה מאושרים נכנסים ליומן Google</label>
+    <label class="field"><span>לאיזה יומן</span>
+      <select data-set="blocks_calendar_name" id="calPick" ${on ? '' : 'disabled'}>
+        <option value="${esc(name)}" selected>${esc(name || 'יומן נפרד: משימות – בלוקי עבודה')}</option>
+      </select></label>
+    <p class="hint small">אחרי „אשר תכנון” הבלוקים מופיעים ביומן. הזזה או מחיקה של האירוע ביומן מעדכנת את האפליקציה.</p>
+    <label class="check"><input type="checkbox" data-set="sync_deadlines_to_calendar" ${store.setting('sync_deadlines_to_calendar') === 'TRUE' ? 'checked' : ''}> תאריכי הגשה ביומן נפרד „משימות – הגשות”</label>
+    ${st.kind === 'error' ? noticeHtml({ tone: 'err', ...calendarText(st), action: '', tech: st.tech })
+      : st.kind === 'ok' && st.at ? `<p class="hint small">✓ סונכרן לאחרונה ${esc(whenLabel(st.at))}</p>` : ''}`;
+}
+
+/** Fills the "which calendar" list with Bahr's own calendars (asked from the backend). */
+async function loadCalendarChoices(dlg) {
+  const sel = $('#calPick', dlg);
+  if (!sel || !store.configured || store.apiVersion < 5) return;
+  try {
+    const r = await store.action('calendars');
+    const chosen = store.setting('blocks_calendar_name', '');
+    const names = (r.calendars || []).map((c) => ({ value: c.name, label: c.primary ? `${c.name} (היומן הראשי)` : c.name }));
+    if (chosen && !names.some((n) => n.value === chosen)) names.unshift({ value: chosen, label: `${chosen} (לא נמצא)` });
+    names.push({ value: '', label: 'יומן נפרד: משימות – בלוקי עבודה' });
+    sel.innerHTML = names.map((n) => `<option value="${esc(n.value)}" ${n.value === chosen ? 'selected' : ''}>${esc(n.label)}</option>`).join('');
+  } catch { /* keep the current name only */ }
+}
+
 function openSettings() {
   const dlg = $('#settings');
   const cfg = store.cfg || { url: '', key: '' };
@@ -467,19 +521,16 @@ function openSettings() {
           <div><dt>מצב</dt><dd>${store.isDemo ? 'הדגמה (נתונים רק במכשיר הזה)' : 'מחובר לגיליון'}</dd></div>
           <div><dt>סנכרון אחרון</dt><dd>${esc(store.lastSync || '—')}</dd></div>
           <div><dt>שינויים שממתינים לשליחה</dt><dd>${store.queue.length}</dd></div>
-          ${store.error ? `<div><dt>שגיאה אחרונה</dt><dd dir="ltr">${esc(store.error)}</dd></div>` : ''}
         </dl>
+        ${store.status === 'error' ? noticeHtml({ tone: 'err', title: friendlyError(store.error), tech: store.error }) : ''}
         ${deviceLink ? `<button type="button" class="btn ghost" data-copy>העתק קישור הגדרה למכשיר נוסף</button>
           <p class="hint small">פתח את הקישור בטלפון / באייפד והמכשיר יתחבר. הקישור מכיל את המפתח — אל תשתף אותו.</p>` : ''}
         <hr>
         <h3 class="sub-h">יומן Google</h3>
-        ${store.apiVersion && store.apiVersion < 3 ? '<p class="hint small">כדי להפעיל צריך קודם לעדכן את השרת (Apps Script) — ראה SETUP.md.</p>' : ''}
-        <label class="check"><input type="checkbox" data-set="sync_deadlines_to_calendar" ${store.setting('sync_deadlines_to_calendar') === 'TRUE' ? 'checked' : ''}> להציג תאריכי הגשה ביומן „משימות – הגשות”</label>
-        <label class="check"><input type="checkbox" data-set="sync_blocks_to_calendar" ${store.setting('sync_blocks_to_calendar') === 'TRUE' ? 'checked' : ''}> להציג בלוקי עבודה מאושרים ביומן „משימות – בלוקי עבודה” (דו-כיווני)</label>
-        <p class="hint small">סנכרון אחרון: ${esc(store.setting('calendar_last_sync') || '—')}</p>
+        ${calendarSettingsHtml()}
         <hr>
         <h3 class="sub-h">מודל</h3>
-        <p class="hint small">מצב: <span dir="auto">${esc(store.setting('moodle_status') || 'לא מחובר')}</span>${store.setting('moodle_last_check') ? ` · נבדק ${esc(store.setting('moodle_last_check'))}` : ''}</p>
+        ${statusLine(moodleState(), moodleText(moodleState()), store.setting('moodle_last_check') ? `נבדק ${whenLabel(store.setting('moodle_last_check'))}` : '')}
         <div class="row wrap">
           <label class="field grow"><span>Moodle token</span><input name="moodle_token" dir="ltr" autocomplete="off" placeholder="מתוך config.json → token"></label>
           <button type="button" class="btn ghost" data-moodle>חבר</button>
@@ -488,12 +539,12 @@ function openSettings() {
         <hr>
         <h3 class="sub-h">AI להודעות ממודל</h3>
         <p class="hint small">Gemini קורא כל הודעה ממודל ומציע משימה רק כשיש בה משהו לעשות שעוד לא קיים במשימות שלך.</p>
-        <p class="hint small">מצב: <span dir="auto">${esc(store.setting('ai_status') || 'לא מחובר')}</span></p>
+        ${statusLine(aiState(), aiText(aiState()), '')}
         <div class="row wrap">
           <label class="field grow"><span>מפתח Gemini API</span><input name="gemini_key" dir="ltr" autocomplete="off" placeholder="AIza…"></label>
           <button type="button" class="btn ghost" data-gemini>חבר</button>
         </div>
-        <p class="hint small">מפתח בחינם: <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a> → Create API key. נשמר רק בשרת שלך (Script Properties). המודל נבחר אוטומטית (Gemini Flash העדכני); אפשר לקבוע אחר בגיליון: settings → ai_model.</p>
+        <p class="hint small">מפתח בחינם: <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a> → Create API key. נשמר רק בשרת שלך (Script Properties). כדי לא לחרוג מהמכסה החינמית, ה-AI קורא כמה הודעות בבקשה אחת ומתחיל ב-Gemini Flash-Lite; כשמודל עמוס או נגמרה לו המכסה הוא עובר למודל אחר או מחכה. אפשר לקבוע מודל ראשון בגיליון: settings → ai_model.</p>
         <hr>
         <h3 class="sub-h">פומודורו</h3>
         <div class="row wrap pomo">
@@ -539,10 +590,16 @@ function openSettings() {
     catch { prompt('העתק את הקישור:', deviceLink); }
   });
   dlg.querySelectorAll('[data-set]').forEach((inp) => inp.addEventListener('change', () => {
-    const v = inp.type === 'checkbox' ? (inp.checked ? 'TRUE' : 'FALSE') : String(Math.max(1, Math.round(Number(inp.value) || 1)));
+    const v = inp.type === 'checkbox' ? (inp.checked ? 'TRUE' : 'FALSE')
+      : inp.tagName === 'SELECT' ? inp.value : String(Math.max(1, Math.round(Number(inp.value) || 1)));
     store.setSetting(inp.dataset.set, v);
-    toast(/calendar/.test(inp.dataset.set) && v === 'TRUE' ? 'נשמר — היומן יתעדכן בעוד רגע' : 'נשמר');
+    if (inp.dataset.set === 'sync_blocks_to_calendar' && $('#calPick', dlg)) $('#calPick', dlg).disabled = !inp.checked;
+    const cal = /calendar/.test(inp.dataset.set);
+    if (inp.dataset.set === 'blocks_calendar_name') toast(`נשמר — הבלוקים המאושרים יעברו ליומן „${v || 'משימות – בלוקי עבודה'}”`);
+    else toast(cal && v === 'TRUE' ? 'נשמר — היומן יתעדכן בעוד רגע' : 'נשמר');
+    if (cal) store.refresh(); // the backend syncs the calendar with this save; show the result
   }));
+  loadCalendarChoices(dlg);
   $('[data-moodle]', dlg)?.addEventListener('click', async () => {
     const token = form.moodle_token.value.trim();
     if (!token) { form.moodle_token.focus(); return; }
@@ -555,7 +612,7 @@ function openSettings() {
       const c = await store.action('moodleCheck');
       toast(c.added ? `נמצאו ${c.added} הודעות/מטלות במודל` : 'מודל מחובר, אין חדש');
       store.refresh();
-    } catch (err) { toast(`לא הצלחתי להתחבר למודל: ${err.message}`); }
+    } catch (err) { toast(/invalidtoken|token/i.test(err.message) ? 'ה-token לא עבד — בדוק שהעתקת את כולו' : friendlyError(err.message)); }
   });
   $('[data-gemini]', dlg)?.addEventListener('click', async () => {
     const key = form.gemini_key.value.trim();
@@ -568,9 +625,10 @@ function openSettings() {
       toast(`ה-AI מחובר (${r.model}) — עובר על ההודעות…`);
       await store.refresh();
       const a = await store.action('aiReview');
-      toast(a.reviewed ? `ה-AI עבר על ${a.reviewed} הודעות` : `AI: ${a.status}`);
-      store.refresh();
-    } catch (err) { toast(`המפתח לא עבד: ${err.message}`); }
+      await store.refresh();
+      const as = aiState();
+      toast(a.reviewed ? `ה-AI עבר על ${a.reviewed} הודעות` : as.kind === 'ok' ? 'אין הודעות שמחכות ל-AI' : aiText(as).title);
+    } catch (err) { toast(/Gemini|API key/i.test(err.message) ? 'המפתח לא עבד — בדוק שהעתקת את כולו' : friendlyError(err.message)); }
   });
   $('[data-logout]', dlg)?.addEventListener('click', () => {
     if (store.queue.length && !confirm('יש שינויים שעוד לא נשלחו. לנתק בכל זאת?')) return;

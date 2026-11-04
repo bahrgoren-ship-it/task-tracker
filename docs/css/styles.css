@@ -202,10 +202,11 @@ dialog.sheet::backdrop { background: rgba(10, 14, 22, .45); }
 
 .field { display: grid; gap: 5px; border: 0; padding: 0; margin: 0; min-width: 0; }
 .field > span, .field > legend { font-size: .82rem; color: var(--muted); font-weight: 500; padding: 0; margin-bottom: 5px; }
-.field input, .field textarea {
+.field input, .field textarea, .field select {
   width: 100%; min-width: 0; min-height: 44px; border: 1px solid var(--line); background: var(--bg); border-radius: 10px; padding: 10px 12px; font-size: 1rem;
 }
-.field input:focus, .field textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
+.field select:disabled { opacity: .55; }
+.field input:focus, .field textarea:focus, .field select:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
 .field input.invalid { border-color: var(--late); }
 .field textarea { resize: vertical; line-height: 1.5; }
 .row { display: flex; gap: 12px; align-items: end; }
@@ -329,6 +330,25 @@ body.has-timer .toast { bottom: calc(210px + env(safe-area-inset-bottom)); }
   border-radius: 12px; padding: 10px 12px; font-size: .9rem; margin: 12px 0 0; }
 .note.err { background: color-mix(in srgb, var(--late) 10%, var(--surface)); border-color: color-mix(in srgb, var(--late) 35%, transparent); }
 
+/* ---------- notices: what happened + what to do; the original error text under "פרטים" ---------- */
+.notice { display: flex; align-items: flex-start; gap: 10px; margin: 12px 0 0; padding: 10px 12px; border-radius: 12px;
+  border: 1px solid var(--line); background: var(--surface); font-size: .9rem; line-height: 1.5; }
+.notice .n-text { flex: 1; min-width: 0; }
+.notice .n-text b { font-weight: 600; }
+.notice .n-text span { color: var(--muted); }
+.notice.t-info { border-inline-start: 3px solid var(--accent); }
+.notice.t-warn { background: color-mix(in srgb, var(--warn) 10%, var(--surface)); border-color: color-mix(in srgb, var(--warn) 30%, transparent); }
+.notice.t-err { background: color-mix(in srgb, var(--late) 8%, var(--surface)); border-color: color-mix(in srgb, var(--late) 30%, transparent); }
+.notice.t-err .n-text b { color: var(--late); }
+.notice .btn { flex: none; }
+.notice details, .ai-box details { margin-top: 4px; font-size: .78rem; color: var(--muted); }
+.notice summary, .ai-box summary { cursor: pointer; width: fit-content; }
+.notice details p, .ai-box details p { margin: 4px 0 0; text-align: left; overflow-wrap: anywhere; line-height: 1.45; }
+.n-x { flex: none; border: 0; background: transparent; color: var(--muted); width: 28px; height: 28px; border-radius: 8px; margin: -4px -4px 0 0; }
+.n-x:hover { background: var(--surface-2); color: var(--text); }
+.sheet-body .notice { margin: 0; }
+.planner .notice { margin: 0 0 8px; }
+
 /* ---------- planner ---------- */
 .planner { --top: 76px; display: flex; flex-direction: column; height: calc(100dvh - var(--top) - 72px - env(safe-area-inset-bottom) - env(safe-area-inset-top));
   max-width: 1400px; margin: 0 auto; padding: 10px 12px 0; }
@@ -371,9 +391,10 @@ body.has-timer .planner { height: calc(100dvh - var(--top) - 72px - 72px - env(s
 .pl-grid .pl-gutter span:first-child { transform: none; }
 .pl-day { position: relative; border-inline-start: 1px solid var(--line); cursor: copy; }
 .pl-day.today { background: color-mix(in srgb, var(--accent) 5%, transparent); }
-.busy { position: absolute; inset-inline: 2px; border-radius: 6px; background: repeating-linear-gradient(135deg, var(--surface-2) 0 6px, color-mix(in srgb, var(--surface-2) 55%, transparent) 6px 12px);
+/* (named cal-busy, not busy: .sync-pill.busy is the "saving…" state of the pill in the header) */
+.cal-busy { position: absolute; inset-inline: 2px; border-radius: 6px; background: repeating-linear-gradient(135deg, var(--surface-2) 0 6px, color-mix(in srgb, var(--surface-2) 55%, transparent) 6px 12px);
   border: 1px solid var(--line); color: var(--muted); font-size: .7rem; padding: 2px 5px; overflow: hidden; pointer-events: none; }
-.busy span { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cal-busy span { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .due-line { position: absolute; inset-inline: 0; border-top: 2px solid var(--late); pointer-events: none; z-index: 3; }
 .due-line span { position: absolute; top: -9px; inset-inline-start: 2px; font-size: .65rem; background: var(--late); color: #fff; padding: 0 4px; border-radius: 4px; white-space: nowrap; max-width: 95%; overflow: hidden; text-overflow: ellipsis; }
 .now-line { position: absolute; inset-inline: 0; border-top: 2px solid var(--late); z-index: 4; pointer-events: none; }
@@ -437,8 +458,13 @@ body.has-timer .planner { height: calc(100dvh - var(--top) - 72px - 72px - env(s
 .k-date_change .ib-meta .kind { background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn); }
 .inbox-item h3 { margin: 6px 0 4px; font-size: 1.05rem; line-height: 1.35; }
 .ib-summary { margin: 0 0 8px; font-size: .9rem; color: var(--muted); }
-.ib-text { margin: 0; font-size: .92rem; line-height: 1.6; white-space: pre-line; overflow-wrap: anywhere; max-width: 68ch; }
-.ib-text.clamped { display: -webkit-box; -webkit-line-clamp: 6; -webkit-box-orient: vertical; overflow: hidden; }
+.ib-text { margin: 0; font-size: .92rem; line-height: 1.6; overflow-wrap: anywhere; max-width: 68ch; }
+.ib-text p { margin: 0 0 .55em; }
+.ib-text ul, .ib-text ol { margin: 0 0 .55em; padding-inline-start: 1.4em; }
+.ib-text li { margin: .15em 0; }
+.ib-text li::marker { color: var(--muted); }
+.ib-text > :last-child { margin-bottom: 0; }
+.ib-text.clamped { max-height: 9.6em; overflow: hidden; -webkit-mask-image: linear-gradient(to bottom, #000 65%, transparent); mask-image: linear-gradient(to bottom, #000 65%, transparent); }
 .ib-text a { color: var(--accent); }
 .linkish { background: none; border: 0; padding: 0; font: inherit; color: var(--accent); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
 .inbox-item > .linkish { font-size: .86rem; margin-top: 4px; }

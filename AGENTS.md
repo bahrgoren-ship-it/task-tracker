@@ -12,6 +12,7 @@ Bahr's task tracker (homework first; may grow to all tasks): a Hebrew (RTL) inst
 | `docs/js/dates.js` | Date helpers (everything in Israel time, strings `yyyy-mm-dd` / `HH:MM`). |
 | `docs/js/timer.js` | Stopwatch / pomodoro. State lives in the Sheet (`settings.active_timer`) so devices share it; focus time is saved to `sessions`. |
 | `docs/js/planner.js` | Planner: custom RTL week grid, drag tasks from the tray into work blocks (`blocks`), move/resize, tap-to-place, "אשר תכנון", busy layer from Google Calendar. No external libraries. |
+| `docs/js/notices.js` | Status strings (`ai_status`, `moodle_status`, `calendar_status`) → plain Hebrew + what to do; `noticeHtml` (original text under „פרטים”, dismissable). |
 | `docs/js/inbox.js` | "הודעות" screen: full Moodle messages + the AI's suggestions (add task / update task / not needed). A message is never a task by itself. |
 | `docs/js/demo.js` | In-browser fake backend ("demo mode"). Keep its API identical to the real one. |
 | `docs/sw.js` | Service worker (offline). **Bump `VERSION` whenever anything in `docs/` changes.** |
@@ -32,6 +33,11 @@ Bahr's task tracker (homework first; may grow to all tasks): a Hebrew (RTL) inst
   one blue accent, red only for overdue / due times, course colour as the only other colour. Font: IBM Plex Sans
   Hebrew. Tasks are grouped by day into one list per day (rows with dividers), with the deadline at the end of
   the title line. Below 900px the tabs are a bottom bar; from 900px they sit in the header.
+
+- AI on the Gemini free tier: one request per batch of messages, Flash-Lite first, models that answer 429/5xx rest
+  (`AI_REST` in Script Properties). Never mark a message as failed for busy/quota.
+- CSS class `.busy` belongs to the sync pill; the planner's calendar layer is `.cal-busy`.
+- `batch` drops upserts that would create half a row (REQUIRED) and returns fresh rows; the app applies them.
 
 ## Roadmap
 1. ✅ Sheet + Notion import. 2. ✅ Tasks screen + time tracking (estimate, total, stopwatch/pomodoro).

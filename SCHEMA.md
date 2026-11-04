@@ -87,7 +87,7 @@ Per task: planned hours = sum of `planned`+`done` blocks; done hours = sum of `d
 `id`, `course`, `kind`, `moodle_ref` (dedup key), `posted_at`, `title`, `author`, `text` (the **full** message, up to
 40,000 characters), `detected_dates` (comma-separated `yyyy-mm-dd` or `yyyy-mm-dd HH:MM`), `url`,
 `status` (`new` · `accepted` = handled, at least one task came from it · `ignored` = read, nothing to do), `task_id`,
-`ai_status` (empty = waiting for the AI · `done` · `error: …`), `ai_summary` (1–2 Hebrew sentences),
+`ai_status` (empty = waiting for the AI · `done` · `error: …` only for problems with that message — busy/quota never marks a message), `ai_summary` (1–2 Hebrew sentences),
 `ai_suggestions` (JSON array, see below), `ai_checked_at`.
 
 Filled every ~15 min by the backend from Technion Moodle (`moodle26.technion.ac.il`, Bahr's Moodle token in Script
@@ -114,8 +114,10 @@ Key/value pairs: `sync_deadlines_to_calendar`, `sync_blocks_to_calendar`, `defau
 `week_starts_on`, `timezone`, `moodle_check_minutes`, `pomodoro_focus_minutes` (25), `pomodoro_short_break_minutes` (5),
 `pomodoro_long_break_minutes` (15), `pomodoro_long_break_every` (4), `pomodoro_auto_start_breaks` (TRUE),
 `active_timer` (app-managed JSON of the running timer, shared by all devices — don't edit), `deadline_calendar_id`,
-`blocks_calendar_id`, `calendar_last_sync`, `moodle_last_check`, `moodle_status` (all app-managed), `ai_model` (empty =
-newest Gemini Flash, chosen automatically; or a model id like `gemini-3.6-flash`), `ai_status` (app-managed), `schema_version`.
+`blocks_calendar_name` (Google Calendar for confirmed work blocks, default `לימודים`; empty = app calendar), `blocks_calendar_id`
+(calendar holding the events now), `calendar_last_sync`, `calendar_status` (`ok · time` / `error · time · what`), `moodle_last_check`,
+`moodle_status` (all app-managed), `ai_model` (empty = automatic: newest Flash-Lite, then newest Flash; or a model id to try first),
+`ai_status` (`ok · …` / `waiting · why · until · at` / `error · what · at`), `ai_last_error` (Gemini's text), `schema_version` (5).
 
 ## Google Calendar (optional, switched on in the app's settings)
 

@@ -4,6 +4,9 @@
 // Nothing changes until Bahr accepts a suggestion.
 import { store } from './store.js';
 import { shortDate, weekday, todayIL, dayDiff, dueLabel } from './dates.js';
+import { aiState, aiText, moodleState, moodleText, noticeHtml, friendlyError, whenLabel } from './notices.js';
+
+const MOODLE = 'https://moodle26.technion.ac.il';
 
 let root, ui = {};
 let lastSig = '';
@@ -21,7 +24,9 @@ export function initInbox(el, callbacks) {
 export function suggestionsOf(m) {
   try { const a = JSON.parse(m.ai_suggestions || '[]'); return Array.isArray(a) ? a : []; } catch { return []; }
 }
-const aiConnected = () => /^(connected|ok|error)/.test(store.setting('ai_status', ''));
+const aiConnected = () => aiState().kind !== 'off';
+// the AI hasn't read it yet — never read, or only failed because Gemini was busy / out of quota (older backend)
+const aiPending = (m) => !m.ai_status || m.ai_status === 'pending' || /^error: Gemini (429|5\d\d)/.test(m.ai_status);
 
 /** Line under the screen title. */
 export function summary() {
@@ -38,27 +43,29 @@ export function render(force = false) {
   if (!root || root.hidden) return;
   const showAll = store.ui('inboxAll', false);
   const sig = JSON.stringify([store.data.moodle_inbox, store.data.tasks.map((t) => [t.id, t.title, t.due_date, t.due_time]),
-    showAll, store.setting('moodle_status'), store.setting('ai_status'), store.apiVersion, store.data.courses, [...expanded], [...reviewing]]);
+    showAll, store.setting('moodle_status'), store.setting('ai_status'), store.setting('ai_last_error'), store.apiVersion,
+    store.data.courses, [...expanded], [...reviewing], store.ui('dismissed', {})]);
   if (!force && sig === lastSig) return;
   lastSig = sig;
   const items = store.data.moodle_inbox
     .filter((m) => showAll || m.status === 'new')
     .sort((a, b) => (b.posted_at || '').localeCompare(a.posted_at || ''));
   const newCount = store.inboxNew().length;
-  const status = store.setting('moodle_status', '');
-  const aiStatus = store.setting('ai_status', '');
+  // notices only for what needs attention now: Moodle not connected / failing, or messages the AI can't read yet
   let head = '';
   if (store.apiVersion && store.apiVersion < 4) {
-    head = `<div class="note">כדי שה-AI יעבור על ההודעות צריך לעדכן את השרת (Apps Script) לגרסה החדשה — ההוראות ב-SETUP.md.</div>`;
-  } else if (!status || status === 'not connected') {
-    head = `<div class="note">מודל עוד לא מחובר. ב-⚙️ הגדרות → „מודל” הדבק את ה-token של מודל (אותו אחד שמשמש את Update Moodle).</div>`;
-  } else if (status.startsWith('error')) {
-    head = `<div class="note err">הבדיקה האחרונה של מודל נכשלה: <span dir="ltr">${esc(status.slice(7))}</span></div>`;
-  }
-  if (store.apiVersion >= 4 && !aiConnected()) {
-    head += `<div class="note">ה-AI שעובר על ההודעות עוד לא מחובר. ב-⚙️ הגדרות → „AI” הדבק מפתח Gemini (בחינם מ-aistudio.google.com).</div>`;
-  } else if (aiStatus.startsWith('error')) {
-    head += `<div class="note err">ה-AI נכשל בפעם האחרונה: <span dir="ltr">${esc(aiStatus.slice(7))}</span></div>`;
+    head = noticeHtml({ tone: 'warn', title: 'צריך לעדכן את השרת', body: 'כדי שה-AI יעבור על ההודעות צריך לעדכן את Apps Script לגרסה החדשה (SETUP.md).' });
+  } else {
+    const ms = moodleState();
+    if (ms.kind === 'off') head += noticeHtml({ tone: 'warn', ...moodleText(ms) });
+    if (ms.kind === 'error') head += noticeHtml({ tone: 'err', ...moodleText(ms), tech: ms.tech, dismiss: `moodle:${ms.tech}` });
+    const waiting = store.data.moodle_inbox.some((m) => m.status === 'new' && m.kind !== 'date_change' && aiPending(m));
+    const as = aiState();
+    if (store.apiVersion >= 4 && waiting) {
+      if (as.kind === 'off') head += noticeHtml({ tone: 'warn', ...aiText(as) });
+      if (as.kind === 'waiting') head += noticeHtml({ tone: 'info', ...aiText(as), tech: as.tech, dismiss: `ai:${as.why}:${as.until}` });
+      if (as.kind === 'error') head += noticeHtml({ tone: 'err', ...aiText(as), tech: as.tech, dismiss: `ai:${as.what}:${as.tech}` });
+    }
   }
   root.innerHTML = `
     <div class="inbox-top">
@@ -85,13 +92,13 @@ function itemHtml(m) {
     <div class="ib-meta">
       ${c ? `<span class="course"><i></i>${esc(c.short_he || c.name_he)}</span>` : ''}
       <span class="kind">${KIND[m.kind] || m.kind}</span>
-      ${m.posted_at ? `<span>${esc(shortDate(m.posted_at.slice(0, 10)))} ${esc(m.posted_at.slice(11))}</span>` : ''}
+      ${m.posted_at ? `<span>${esc(postedLabel(m))}</span>` : ''}
       ${m.author ? `<span>${esc(m.author)}</span>` : ''}
       ${handled ? `<span class="state">${m.status === 'accepted' ? '✓ טופל' : 'נקרא'}</span>` : ''}
     </div>
     <h3>${esc(m.title)}</h3>
     ${m.ai_summary ? `<p class="ib-summary"><span aria-hidden="true">✨</span> ${esc(m.ai_summary)}</p>` : ''}
-    ${text ? `<div class="ib-text ${long && !open ? 'clamped' : ''}">${linkify(text)}</div>
+    ${m.kind === 'date_change' ? dateChangeHtml(m) : text ? `<div class="ib-text ${long && !open ? 'clamped' : ''}">${mdLite(text, fromDrive(m))}</div>
       ${long ? `<button class="linkish" data-act="expand">${open ? 'הצג פחות' : 'קרא את כל ההודעה'}</button>` : ''}` : ''}
     ${dates.length && m.ai_status !== 'done' ? `<div class="ib-dates">${dates.map((d) => `<span class="${dayDiff(todayIL(), d.slice(0, 10)) < 0 ? 'past' : ''}">📅 יום ${weekday(d.slice(0, 10))} ${shortDate(d.slice(0, 10))}${d.length > 10 ? ` ${d.slice(11)}` : ''}</span>`).join('')}</div>` : ''}
     ${linked && m.kind === 'date_change' ? `<p class="hint small">משויך למשימה „${esc(linked.title)}”</p>` : ''}
@@ -103,7 +110,7 @@ function itemHtml(m) {
       <span class="quiet-acts">
         ${m.kind !== 'date_change' ? '<button class="quiet" data-act="manual">משימה ידנית</button>' : ''}
         ${m.kind !== 'date_change' && store.apiVersion >= 4 && aiConnected() ? `<button class="quiet" data-act="rereview" ${reviewing.has(m.id) ? 'disabled' : ''}>${reviewing.has(m.id) ? 'בודק…' : 'בדוק שוב עם AI'}</button>` : ''}
-        ${m.url ? `<a class="quiet" href="${esc(m.url)}" target="_blank" rel="noopener">פתח במודל</a>` : ''}
+        ${linkHtml(m, c)}
       </span>
     </div>
   </li>`;
@@ -113,11 +120,16 @@ const openSuggestions = (m) => suggestionsOf(m).filter((s) => s.state === 'open'
 
 function aiHtml(m) {
   if (reviewing.has(m.id)) return '<div class="ai-box wait">✨ ה-AI קורא את ההודעה…</div>';
-  if (!m.ai_status) {
-    if (store.apiVersion < 4 || !aiConnected()) return '';
-    return m.status === 'new' ? '<div class="ai-box wait">✨ ה-AI יעבור על ההודעה בדקות הקרובות…</div>' : '';
+  if (aiPending(m)) {
+    if (store.apiVersion < 4 || !aiConnected() || m.status !== 'new') return '';
+    const st = aiState();
+    const when = st.kind !== 'waiting' ? ' בדקות הקרובות' : st.until ? ` ${whenLabel(st.until)}` : ' כשהמכסה תתחדש';
+    return `<div class="ai-box wait">✨ ה-AI יקרא את ההודעה${when}.</div>`;
   }
-  if (m.ai_status.startsWith('error')) return `<div class="ai-box err">ה-AI לא הצליח לקרוא את ההודעה: <span dir="ltr">${esc(m.ai_status.slice(7))}</span></div>`;
+  if (m.ai_status.startsWith('error')) {
+    return `<div class="ai-box err">✨ ה-AI לא הצליח לקרוא את ההודעה הזו. <button class="linkish" data-act="rereview">נסה שוב</button>
+      <details><summary>פרטים</summary><p dir="ltr">${esc(m.ai_status.replace(/^error:?\s*/, ''))}</p></details></div>`;
+  }
   const sugg = suggestionsOf(m);
   const acts = sugg.filter((s) => s.type !== 'covered');
   const covered = sugg.filter((s) => s.type === 'covered');
@@ -159,8 +171,77 @@ function suggestionHtml(m, s) {
 
 function dueLabelFrom(stamp) { return dueLabel(stamp.slice(0, 10), stamp.length > 10 ? stamp.slice(11, 16) : ''); }
 
-function linkify(text) {
-  return esc(text).replace(/https?:\/\/[^\s<>"']+/g, (u) => `<a href="${u}" target="_blank" rel="noopener" dir="ltr">${u.length > 60 ? `${u.slice(0, 57)}…` : u}</a>`);
+// Posts copied from the moodle-dl folder in Drive (refs "post:file…"): Markdown text, and no real post time.
+const fromDrive = (m) => String(m.moodle_ref || '').startsWith('post:file');
+
+function postedLabel(m) {
+  const d = m.posted_at.slice(0, 10), t = m.posted_at.slice(11, 16);
+  return `${shortDate(d)}${t && !fromDrive(m) ? ` ${t}` : ''}`;
+}
+
+/** Where "open" goes: the post on Moodle; for a Drive copy, the course's announcements board on Moodle. */
+function messageUrl(m) {
+  if (!/^https:\/\/drive\.google\.com\//.test(m.url || '')) return m.url || '';
+  const c = store.course(m.course);
+  return c && c.moodle_news_forum_id ? `${MOODLE}/mod/forum/view.php?id=${encodeURIComponent(c.moodle_news_forum_id)}` : m.url;
+}
+function linkHtml(m) {
+  const url = messageUrl(m);
+  if (!url) return '';
+  const label = /drive\.google\.com/.test(url) ? 'פתח ב-Drive' : url !== m.url ? 'לוח ההודעות במודל' : 'פתח במודל';
+  return `<a class="quiet" href="${esc(url)}" target="_blank" rel="noopener">${label}</a>`;
+}
+
+function dateChangeHtml(m) {
+  const r = /במודל: (\d{4}-\d{2}-\d{2}(?: \d{2}:\d{2})?) · אצלך: (\d{4}-\d{2}-\d{2}(?: \d{2}:\d{2})?)/.exec(m.text || '');
+  if (!r) return m.text ? `<div class="ib-text">${mdLite(m.text, false)}</div>` : '';
+  return `<p class="ib-text">תאריך ההגשה במודל: <b>${esc(dueLabelFrom(r[1]))}</b>. אצלך במשימה: ${esc(dueLabelFrom(r[2]))}.</p>`;
+}
+
+/**
+ * Message text → HTML. Text copied by moodle-dl is Markdown with lines wrapped at ~80 characters (wrapped = true):
+ * the lines of a paragraph are joined again, and **bold**, lists and links show properly. Other text keeps its
+ * line breaks.
+ */
+export function mdLite(text, wrapped) {
+  const src = String(text || '').replace(/\r\n?/g, '\n').replace(/\\([\\`*_{}[\]()#+\-.!>|])/g, '$1');
+  const out = [];
+  let para = [], list = null, blank = false;
+  const joinLines = (ls) => ls.map((l, i) => inline(l.trim()) +
+    (i < ls.length - 1 ? (wrapped && !/ {2,}$/.test(l) ? ' ' : '<br>') : '')).join('');
+  const endPara = () => { if (para.length) out.push(`<p>${joinLines(para)}</p>`); para = []; };
+  const endList = () => {
+    if (list) out.push(`<${list.tag}${list.start > 1 ? ` start="${list.start}"` : ''}>${list.items.map((it) => `<li>${joinLines(it)}</li>`).join('')}</${list.tag}>`);
+    list = null;
+  };
+  for (const line of src.split('\n')) {
+    if (!line.trim()) { endPara(); blank = true; continue; }
+    const li = /^\s*(?:([*+-])|(\d{1,3})[.)])\s+(.*)$/.exec(line);
+    if (li) {
+      endPara();
+      const tag = li[1] ? 'ul' : 'ol';
+      if (!list || list.tag !== tag) { endList(); list = { tag, start: li[2] ? +li[2] : 1, items: [] }; }
+      list.items.push([li[3]]);
+    } else if (list && (!blank || /^\s{2,}/.test(line))) {
+      list.items[list.items.length - 1].push(line); // the item goes on in the next line
+    } else {
+      endList();
+      const h = /^#{1,6}\s+(.*)$/.exec(line.trim());
+      if (h) { endPara(); out.push(`<p><b>${inline(h[1])}</b></p>`); } else para.push(line);
+    }
+    blank = false;
+  }
+  endPara(); endList();
+  return out.join('');
+}
+function inline(s) {
+  const keep = [];
+  const put = (html) => { keep.push(html); return `\u0000${keep.length - 1}\u0000`; };
+  let h = esc(s)
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, (_, t, u) => put(`<a href="${u}" target="_blank" rel="noopener">${t}</a>`))
+    .replace(/https?:\/\/[^\s<>"]*[^\s<>".,;:!?)\]]/g, (u) => put(`<a href="${u}" target="_blank" rel="noopener" dir="ltr">${u.length > 60 ? `${u.slice(0, 57)}…` : u}</a>`));
+  h = h.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/__(.+?)__/g, '<b>$1</b>').replace(/\*\*/g, '');
+  return h.replace(/\u0000(\d+)\u0000/g, (_, i) => keep[+i]);
 }
 
 /* ---------------------------------------------------------------- actions ---- */
@@ -190,14 +271,18 @@ async function onClick(e) {
     ui.toast('בודק את מודל…');
     try {
       const r = await store.action('moodleCheck');
-      ui.toast(r.status && r.status.startsWith('ok') ? (r.added ? `נמצאו ${r.added} חדשות` : 'אין חדש במודל') : `מודל: ${r.status}`);
       await store.refresh();
+      const ms = moodleState();
+      ui.toast(ms.kind === 'error' ? moodleText(ms).title
+        : r.added ? (r.added === 1 ? 'נמצאה הודעה חדשה' : `נמצאו ${r.added} הודעות חדשות`) : 'אין חדש במודל');
       if (r.added && store.apiVersion >= 4 && aiConnected()) {
         ui.toast('ה-AI עובר על ההודעות החדשות…');
         await store.action('aiReview');
-        store.refresh();
+        await store.refresh();
+        const as = aiState();
+        if (as.kind === 'waiting' || as.kind === 'error') ui.toast(aiText(as).title);
       }
-    } catch (err) { ui.toast(`הבדיקה נכשלה: ${err.message}`); }
+    } catch (err) { ui.toast(friendlyError(err.message)); }
     return;
   }
   const openT = e.target.closest('[data-open]');
@@ -233,7 +318,7 @@ async function onClick(e) {
           title: s.title, course: s.course || m.course, due_date: s.due_date || '', due_time: s.due_time || '',
           estimate_hours: Number(s.estimate_hours) ? String(s.estimate_hours) : '',
           notes: [s.notes, `מתוך ההודעה „${m.title}”${m.posted_at ? ` (${shortDate(m.posted_at.slice(0, 10))})` : ''}`].filter(Boolean).join('\n'),
-          links: m.url || '', source: 'moodle', moodle_ref: m.moodle_ref,
+          links: messageUrl(m), source: 'moodle', moodle_ref: m.moodle_ref,
         },
         onSaved: (taskId) => {
           setSuggestion(store.data.moodle_inbox.find((x) => x.id === id), sgId, { state: 'accepted', created_task_id: taskId });
@@ -262,7 +347,7 @@ async function onClick(e) {
   }
   if (act === 'manual') {
     ui.openEditor(null, {
-      prefill: { title: '', course: m.course, notes: `מתוך ההודעה „${m.title}”`, links: m.url || '', source: 'moodle', moodle_ref: m.moodle_ref },
+      prefill: { title: '', course: m.course, notes: `מתוך ההודעה „${m.title}”`, links: messageUrl(m), source: 'moodle', moodle_ref: m.moodle_ref },
       onSaved: () => ui.toast('המשימה נוספה'),
     });
   }
@@ -270,11 +355,13 @@ async function onClick(e) {
     reviewing.add(id); render(true);
     try {
       await store.flush();
-      const r = await store.action('aiReview', { id });
-      if (!/^ok/.test(r.status || '')) ui.toast(`AI: ${r.status}`);
-    } catch (err) { ui.toast(`ה-AI נכשל: ${err.message}`); }
+      await store.action('aiReview', { id });
+    } catch (err) { ui.toast(friendlyError(err.message)); }
     reviewing.delete(id);
     await store.refresh();
+    const as = aiState();
+    const after = store.data.moodle_inbox.find((x) => x.id === id);
+    if (after && aiPending(after) && (as.kind === 'waiting' || as.kind === 'error')) ui.toast(aiText(as).title);
     render(true);
   }
 }

@@ -9,6 +9,7 @@
 //   sync to Google Calendar). The user's own calendar events are shown in grey as busy time.
 import { store } from './store.js';
 import { todayIL, addDays, dayDiff, weekday, shortDate, nowIL, fmtMinutes, dueLabel } from './dates.js';
+import { calendarState, calendarText, noticeHtml } from './notices.js';
 
 const START_H = 6, END_H = 24;          // visible hours
 const SNAP = 15;                        // minutes
@@ -70,7 +71,8 @@ export function render(force = false) {
   if (drag && drag.active) return; // never redraw under the finger
   const days = visibleDays();
   const sig = JSON.stringify([days, store.data.blocks, store.data.tasks, store.data.courses, selectedTask,
-    busyCache[`${days[0]}|${days[days.length - 1]}`] ? 1 : 0, store.setting('sync_blocks_to_calendar'), window.innerWidth >= 900]);
+    busyCache[`${days[0]}|${days[days.length - 1]}`] ? 1 : 0, store.setting('sync_blocks_to_calendar'), store.setting('calendar_status'),
+    store.setting('blocks_calendar_name'), store.ui('dismissed', {}), window.innerWidth >= 900]);
   if (!force && sig === lastSig) return;
   lastSig = sig;
   const keepScroll = $('.pl-scroll')?.scrollTop;
@@ -91,6 +93,7 @@ export function render(force = false) {
       </div>
       <button class="btn primary sm" data-confirm ${drafts.length ? '' : 'disabled'}>אשר תכנון${drafts.length ? ` (${drafts.length})` : ''}</button>
     </div>
+    ${calendarNotice()}
     ${selectedTask ? `<div class="pl-banner">הקש על שעה בלוח כדי לשבץ את „${esc(store.task(selectedTask)?.title || '')}” <button class="btn ghost sm" data-cancelsel>ביטול</button></div>` : ''}
     <div class="pl-body">
       <aside class="pl-tray" aria-label="משימות לתכנון">${trayHtml()}</aside>
@@ -153,7 +156,7 @@ function dayEventsHtml(d) {
     const en = e.end.slice(0, 10) > d ? END_H * 60 : toMin(e.end.slice(11, 16));
     if (en <= START_H * 60 || s >= END_H * 60) continue;
     const a = Math.max(s, START_H * 60), b = Math.min(en, END_H * 60);
-    html += `<div class="busy" style="top:${topOf(a)}px;height:${Math.max(14, topOf(b) - topOf(a))}px" title="${esc(e.calendar)}"><span>${esc(e.title)}</span></div>`;
+    html += `<div class="cal-busy" style="top:${topOf(a)}px;height:${Math.max(14, topOf(b) - topOf(a))}px" title="${esc(e.calendar)}"><span>${esc(e.title)}</span></div>`;
   }
   // deadline lines with a time
   for (const t of store.data.tasks.filter((x) => x.due_date === d && x.due_time && isOpen(x))) {
@@ -287,12 +290,26 @@ function moveBlock(id, start, end) {
   ui.toast(`הבלוק הוזז · ${start.slice(11, 16)}–${end.slice(11, 16)}`, { label: 'בטל', fn: () => store.saveBlock(before) });
 }
 
+// Where confirmed blocks go, for the toast: "„לימודים”" (or the app's own calendar / just "Google").
+function calendarName() {
+  if (store.setting('sync_blocks_to_calendar') !== 'TRUE') return '';
+  if (store.apiVersion && store.apiVersion < 5) return 'Google';
+  return `„${store.setting('blocks_calendar_name', '') || 'משימות – בלוקי עבודה'}”`;
+}
+
+function calendarNotice() {
+  const st = calendarState();
+  if (st.kind !== 'error' || store.setting('sync_blocks_to_calendar') !== 'TRUE') return '';
+  return noticeHtml({ tone: 'err', ...calendarText(st), tech: st.tech, dismiss: `cal:${st.tech}` });
+}
+
 function confirmPlan() {
   const days = visibleDays();
   const drafts = store.data.blocks.filter((b) => b.state === 'draft' && days.includes(b.start.slice(0, 10)));
   drafts.forEach((b) => store.saveBlock({ id: b.id, state: 'planned' }));
-  const synced = store.setting('sync_blocks_to_calendar') === 'TRUE';
-  ui.toast(`${drafts.length} בלוקים אושרו${synced ? ' ויופיעו ביומן Google' : ''}`,
+  const cal = calendarName();
+  const n = drafts.length === 1 ? 'בלוק אחד אושר' : `${drafts.length} בלוקים אושרו`;
+  ui.toast(cal ? `${n} ונכנס${drafts.length === 1 ? '' : 'ים'} ליומן ${cal}` : n,
     { label: 'בטל', fn: () => drafts.forEach((b) => store.saveBlock({ id: b.id, state: 'draft' })) });
 }
 
