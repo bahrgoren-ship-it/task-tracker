@@ -10,6 +10,7 @@
 import { store } from './store.js';
 import { todayIL, addDays, dayDiff, weekday, shortDate, nowIL, fmtMinutes, dueLabel } from './dates.js';
 import { calendarState, calendarText, noticeHtml } from './notices.js';
+import { calendarOf, calLabel } from './categories.js';
 
 const START_H = 6, END_H = 24;          // visible hours
 const SNAP = 15;                        // minutes
@@ -81,7 +82,7 @@ export function render(force = false) {
   const days = visibleDays();
   const sig = JSON.stringify([days, store.data.blocks, store.data.tasks, store.data.courses, store.data.groups, selectedTask,
     busyCache[`${days[0]}|${days[days.length - 1]}`] ? 1 : 0, store.setting('sync_blocks_to_calendar'), store.setting('calendar_status'),
-    store.setting('blocks_calendar_name'), store.ui('dismissed', {}), window.innerWidth >= 900]);
+    store.setting('blocks_calendar_name'), store.setting('other_blocks_calendar_name'), store.ui('dismissed', {}), window.innerWidth >= 900]);
   if (!force && sig === lastSig) return;
   lastSig = sig;
   const keepScroll = $('.pl-scroll')?.scrollTop;
@@ -299,11 +300,15 @@ function moveBlock(id, start, end) {
   ui.toast(`הבלוק הוזז · ${start.slice(11, 16)}–${end.slice(11, 16)}`, { label: 'בטל', fn: () => store.saveBlock(before) });
 }
 
-// Where confirmed blocks go, for the toast: "„לימודים”" (or the app's own calendar / just "Google").
-function calendarName() {
+// Where these confirmed blocks go, for the toast: 'ליומן „לימודים”' / 'ליומנים „לימודים” ו-„Bahr Goren”' ('' = nowhere).
+// Each block goes to its category's calendar (categories.calendarOf).
+function calendarWhere(blocks) {
   if (store.setting('sync_blocks_to_calendar') !== 'TRUE') return '';
-  if (store.apiVersion && store.apiVersion < 5) return 'Google';
-  return `„${store.setting('blocks_calendar_name', '') || 'משימות – בלוקי עבודה'}”`;
+  if (store.apiVersion && store.apiVersion < 5) return 'ליומן Google';
+  const names = [...new Set(blocks.filter((b) => b.sync_calendar !== 'FALSE')
+    .map((b) => calLabel(calendarOf(store.course((store.task(b.task_id) || {}).course)))))].map((n) => `„${n}”`);
+  if (!names.length) return '';
+  return names.length === 1 ? `ליומן ${names[0]}` : `ליומנים ${names.slice(0, -1).join(', ')} ו-${names[names.length - 1]}`;
 }
 
 function calendarNotice() {
@@ -316,9 +321,9 @@ function confirmPlan() {
   const days = visibleDays();
   const drafts = store.data.blocks.filter((b) => b.state === 'draft' && days.includes(b.start.slice(0, 10)));
   drafts.forEach((b) => store.saveBlock({ id: b.id, state: 'planned' }));
-  const cal = calendarName();
+  const cal = calendarWhere(drafts);
   const n = drafts.length === 1 ? 'בלוק אחד אושר' : `${drafts.length} בלוקים אושרו`;
-  ui.toast(cal ? `${n} ונכנס${drafts.length === 1 ? '' : 'ים'} ליומן ${cal}` : n,
+  ui.toast(cal ? `${n} ונכנס${drafts.length === 1 ? '' : 'ים'} ${cal}` : n,
     { label: 'בטל', fn: () => drafts.forEach((b) => store.saveBlock({ id: b.id, state: 'draft' })) });
 }
 

@@ -102,7 +102,7 @@ export function calendarState() {
 export function calendarText(st = calendarState()) {
   if (st.kind === 'error') {
     const nf = /calendar not found: (.*)$/.exec(st.tech);
-    if (nf) return { title: `לא מצאתי ביומן Google יומן בשם „${nf[1]}”`, body: 'הבלוקים לא נכנסים ליומן עד שתבחר יומן קיים ב-⚙️ הגדרות → יומן Google.', action: 'settings' };
+    if (nf) return { title: `לא מצאתי ביומן Google יומן בשם „${nf[1]}”`, body: 'הבלוקים שאמורים להיכנס אליו לא נכנסים ליומן עד שתבחר יומן קיים — ב-⚙️ הגדרות → יומן Google, או בעריכת הקטגוריה („קטגוריות”).', action: 'settings' };
     if (/permission|not allowed|forbidden|הרשאה/i.test(st.tech)) return { title: 'אין הרשאה לכתוב ליומן שנבחר', body: 'בחר יומן שלך ב-⚙️ הגדרות → יומן Google.', action: 'settings' };
     return { title: 'הסנכרון ליומן Google נכשל', body: 'הוא ינסה שוב לבד בעוד כמה דקות.' };
   }

@@ -1,4 +1,4 @@
-# Task tracker — data schema (schema_version 7)
+# Task tracker — data schema (schema_version 8)
 
 The tracker's data lives in ONE Google Sheet:
 
@@ -75,6 +75,7 @@ A task can have any number of blocks.
 | `calendar_event_id` | App-managed. |
 | `note` | Optional: what to do in this block. |
 | `updated_at` | Timestamp. |
+| `calendar_id` | App-managed: the Google Calendar that holds the block's event now (see "Google Calendar" below). |
 
 Per task: planned hours = sum of `planned`+`done` blocks; done hours = sum of `done` blocks.
 
@@ -98,6 +99,7 @@ the app (the "קטגוריות" chip above the task list, or ⚙️ → קטגו
 | `group` | The meta category: a `groups.id`. |
 | `sort` | Order inside the meta category (number). |
 | `archived_at` | `yyyy-mm-dd` it was archived (empty while active). |
+| `calendar` | Name of the Google Calendar for the confirmed work blocks of its tasks. Empty = the default: `settings.blocks_calendar_name` for a course (a category in a semester), `settings.other_blocks_calendar_name` for any other category. Chosen in the app (edit the category). |
 
 ## Tab `groups` — meta categories (קטגוריות־על)
 
@@ -156,17 +158,26 @@ Key/value pairs: `sync_deadlines_to_calendar`, `sync_blocks_to_calendar`, `defau
 `week_starts_on`, `timezone`, `moodle_check_minutes`, `pomodoro_focus_minutes` (25), `pomodoro_short_break_minutes` (5),
 `pomodoro_long_break_minutes` (15), `pomodoro_long_break_every` (4), `pomodoro_auto_start_breaks` (TRUE),
 `active_timer` (app-managed JSON of the running timer, shared by all devices — don't edit), `deadline_calendar_id`,
-`blocks_calendar_name` (Google Calendar for confirmed work blocks, default `לימודים`; empty = app calendar), `blocks_calendar_id`
-(calendar holding the events now), `calendar_last_sync`, `calendar_status` (`ok · time` / `error · time · what`), `moodle_last_check`,
+`blocks_calendar_name` (calendar for the work blocks of courses without a calendar of their own, default `לימודים`),
+`other_blocks_calendar_name` (the same for every other category and for tasks without a category, default `Bahr Goren`;
+in both, empty = the app's calendar `משימות – בלוקי עבודה`), `blocks_calendar_id` (old: the one calendar of all
+block events before schema 8; only a fallback for blocks without `calendar_id`), `calendar_last_sync`, `calendar_status` (`ok · time` / `error · time · what`), `moodle_last_check`,
 `moodle_status` (all app-managed), `ai_model` (empty = automatic: newest Flash-Lite, then newest Flash; or a model id to try first),
-`ai_status` (`ok · …` / `waiting · why · until · at` / `error · what · at`), `ai_last_error` (Gemini's text), `schema_version` (7).
+`ai_status` (`ok · …` / `waiting · why · until · at` / `error · what · at`), `ai_last_error` (Gemini's text), `schema_version` (8).
 
 ## Google Calendar (optional, switched on in the app's settings)
 
 - `sync_deadlines_to_calendar=TRUE` → each task with a due date is an all-day event in the calendar **משימות – הגשות**
   (⏰ open / ✓ done; cancelled or deleted tasks are removed). One-way: Sheet → Calendar.
-- `sync_blocks_to_calendar=TRUE` → planned and done work blocks are events in **משימות – בלוקי עבודה**. Two-way:
+- `sync_blocks_to_calendar=TRUE` → planned and done work blocks are events in Bahr's own calendars, each in its
+  category's calendar: `courses.calendar` if set, else `blocks_calendar_name` for courses (**לימודים**) and
+  `other_blocks_calendar_name` for every other category and for tasks without a category (**Bahr Goren**). Two-way:
   moving an event there changes the block's times; deleting it deletes the block. Drafts never go to the calendar.
+- Each block remembers the calendar that holds its event (`blocks.calendar_id`). When the calendar it belongs in
+  changes (the category's calendar, a default, the task's category, a meta category's kind), the event is deleted
+  there and created in the new calendar: right away when the change is made in the app, within ~10 minutes when the
+  Sheet is edited by hand. A calendar name that doesn't exist leaves those blocks where they are and shows an error in
+  the app (`calendar_status`).
 - The planner also shows Bahr's other calendars as grey "busy" time (read-only).
 
 ## How programs access the data
@@ -174,7 +185,8 @@ Key/value pairs: `sync_deadlines_to_calendar`, `sync_blocks_to_calendar`, `defau
 - **Schema changes** are applied by the backend itself: `migrate_()` in `Code.gs` (runs from `setup()`, on the
   first request after a new version, and from the 10-minute trigger) reorders/creates columns and tabs by header name
   and keeps all data. Schema 7 added the `groups` tab and `courses.group/sort/archived_at`, and put the existing
-  courses into the meta category `winter-2026-2027`.
+  courses into the meta category `winter-2026-2027`. Schema 8 added `courses.calendar`, `blocks.calendar_id` and the
+  setting `other_blocks_calendar_name` (`Bahr Goren`; his main calendar's name if no calendar is called that).
 - **The app** (https://bahrgoren-ship-it.github.io/task-tracker/) talks to an Apps Script web app bound to the
   Sheet (code: `apps-script/Code.gs` in the GitHub repo `bahrgoren-ship-it/task-tracker`). API: POST JSON
   `{key, action}` with `action` = `ping` · `bootstrap` (returns all tabs) · `batch` (`ops: [{op:'upsert', table, row} |

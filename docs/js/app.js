@@ -536,31 +536,41 @@ function calendarSettingsHtml() {
       <label class="check"><input type="checkbox" data-set="sync_deadlines_to_calendar" ${store.setting('sync_deadlines_to_calendar') === 'TRUE' ? 'checked' : ''}> תאריכי הגשה ביומן „משימות – הגשות”</label>`;
   }
   const on = store.setting('sync_blocks_to_calendar') === 'TRUE';
-  const name = store.setting('blocks_calendar_name', 'לימודים');
+  const perCat = categories.hasCalendarPerCategory(); // backend v8+: a calendar per category, two defaults
+  const pick = (key, label) => {
+    const name = store.setting(key, '');
+    return `<label class="field"><span>${label}</span>
+      <select data-set="${key}" class="cal-pick" ${on ? '' : 'disabled'}>
+        <option value="${esc(name)}" selected>${esc(name || `יומן נפרד: ${categories.APP_CALENDAR}`)}</option>
+      </select></label>`;
+  };
   const st = calendarState();
   return `<label class="check"><input type="checkbox" data-set="sync_blocks_to_calendar" ${on ? 'checked' : ''}> בלוקי עבודה מאושרים נכנסים ליומן Google</label>
-    <label class="field"><span>לאיזה יומן</span>
-      <select data-set="blocks_calendar_name" id="calPick" ${on ? '' : 'disabled'}>
-        <option value="${esc(name)}" selected>${esc(name || 'יומן נפרד: משימות – בלוקי עבודה')}</option>
-      </select></label>
-    <p class="hint small">אחרי „אשר תכנון” הבלוקים מופיעים ביומן. הזזה או מחיקה של האירוע ביומן מעדכנת את האפליקציה.</p>
+    ${perCat ? pick('blocks_calendar_name', 'יומן לקורסים') + pick('other_blocks_calendar_name', 'יומן לשאר הקטגוריות (ברירת מחדל לקטגוריה חדשה)')
+      : pick('blocks_calendar_name', 'לאיזה יומן')}
+    <p class="hint small">אחרי „אשר תכנון” הבלוקים מופיעים ביומן. ${perCat ? 'כל קטגוריה יכולה לבחור יומן משלה: „קטגוריות” → עריכת הקטגוריה. '
+      : store.apiVersion >= 5 ? 'כדי לבחור יומן לכל קטגוריה צריך לעדכן את השרת (Apps Script) — ראה SETUP.md. ' : ''}הזזה או מחיקה של האירוע ביומן מעדכנת את האפליקציה.</p>
     <label class="check"><input type="checkbox" data-set="sync_deadlines_to_calendar" ${store.setting('sync_deadlines_to_calendar') === 'TRUE' ? 'checked' : ''}> תאריכי הגשה ביומן נפרד „משימות – הגשות”</label>
     ${st.kind === 'error' ? noticeHtml({ tone: 'err', ...calendarText(st), action: '', tech: st.tech })
       : st.kind === 'ok' && st.at ? `<p class="hint small">✓ סונכרן לאחרונה ${esc(whenLabel(st.at))}</p>` : ''}`;
 }
 
-/** Fills the "which calendar" list with Bahr's own calendars (asked from the backend). */
+/** Fills the "which calendar" lists with Bahr's own calendars (asked from the backend). */
 async function loadCalendarChoices(dlg) {
-  const sel = $('#calPick', dlg);
-  if (!sel || !store.configured || store.apiVersion < 5) return;
+  const sels = [...dlg.querySelectorAll('.cal-pick')];
+  if (!sels.length || !store.configured || store.apiVersion < 5) return;
   try {
     const r = await store.action('calendars');
-    const chosen = store.setting('blocks_calendar_name', '');
-    const names = (r.calendars || []).map((c) => ({ value: c.name, label: c.primary ? `${c.name} (היומן הראשי)` : c.name }));
-    if (chosen && !names.some((n) => n.value === chosen)) names.unshift({ value: chosen, label: `${chosen} (לא נמצא)` });
-    names.push({ value: '', label: 'יומן נפרד: משימות – בלוקי עבודה' });
-    sel.innerHTML = names.map((n) => `<option value="${esc(n.value)}" ${n.value === chosen ? 'selected' : ''}>${esc(n.label)}</option>`).join('');
-  } catch { /* keep the current name only */ }
+    const all = (r.calendars || []).filter((c) => c.name !== categories.APP_CALENDAR)
+      .map((c) => ({ value: c.name, label: c.primary ? `${c.name} (היומן הראשי)` : c.name }));
+    for (const sel of sels) {
+      const chosen = store.setting(sel.dataset.set, '');
+      const names = [...all];
+      if (chosen && !names.some((n) => n.value === chosen)) names.unshift({ value: chosen, label: `${chosen} (לא נמצא)` });
+      names.push({ value: '', label: `יומן נפרד: ${categories.APP_CALENDAR}` });
+      sel.innerHTML = names.map((n) => `<option value="${esc(n.value)}" ${n.value === chosen ? 'selected' : ''}>${esc(n.label)}</option>`).join('');
+    }
+  } catch { /* keep the current names only */ }
 }
 
 function openSettings() {
@@ -671,10 +681,13 @@ function openSettings() {
     const v = inp.type === 'checkbox' ? (inp.checked ? 'TRUE' : 'FALSE')
       : inp.tagName === 'SELECT' ? inp.value : String(Math.max(1, Math.round(Number(inp.value) || 1)));
     store.setSetting(inp.dataset.set, v);
-    if (inp.dataset.set === 'sync_blocks_to_calendar' && $('#calPick', dlg)) $('#calPick', dlg).disabled = !inp.checked;
+    if (inp.dataset.set === 'sync_blocks_to_calendar') dlg.querySelectorAll('.cal-pick').forEach((s) => { s.disabled = !inp.checked; });
     const cal = /calendar/.test(inp.dataset.set);
-    if (inp.dataset.set === 'blocks_calendar_name') toast(`נשמר — הבלוקים המאושרים יעברו ליומן „${v || 'משימות – בלוקי עבודה'}”`);
-    else toast(cal && v === 'TRUE' ? 'נשמר — היומן יתעדכן בעוד רגע' : 'נשמר');
+    const perCat = categories.hasCalendarPerCategory();
+    if (/^(other_)?blocks_calendar_name$/.test(inp.dataset.set)) {
+      const whose = !perCat ? 'הבלוקים המאושרים' : inp.dataset.set === 'blocks_calendar_name' ? 'הבלוקים של הקורסים' : 'הבלוקים של שאר הקטגוריות';
+      toast(`נשמר — ${whose} יעברו ליומן „${v || categories.APP_CALENDAR}”${perCat ? ' (חוץ מקטגוריות שבחרו יומן משלהן)' : ''}`);
+    } else toast(cal && v === 'TRUE' ? 'נשמר — היומן יתעדכן בעוד רגע' : 'נשמר');
     if (cal) store.refresh(); // the backend syncs the calendar with this save; show the result
   }));
   loadCalendarChoices(dlg);
