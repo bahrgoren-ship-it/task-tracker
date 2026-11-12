@@ -6,6 +6,7 @@ import * as planner from './planner.js';
 import * as inbox from './inbox.js';
 import * as suggestions from './suggestions.js';
 import * as categories from './categories.js';
+import * as ctxmenu from './ctxmenu.js';
 import { aiState, aiText, moodleState, moodleText, calendarState, calendarText, noticeHtml, friendlyError, dismiss, whenLabel } from './notices.js';
 
 const SHEET_URL = 'https://docs.google.com/spreadsheets/d/10qLYln2zUiMo7dEI3xZ8pj4ncGX7TRmATZNuZfvUfWM/edit';
@@ -62,10 +63,12 @@ function boot() {
   document.querySelector('.tabbar').addEventListener('click', (e) => {
     const b = e.target.closest('[data-tab]'); if (b && !b.disabled) showTab(b.dataset.tab);
   });
-  planner.initPlanner($('#planner'), { openEditor, openTimer, toast, onRender: () => renderSummary() });
+  planner.initPlanner($('#planner'), { openEditor, openTimer, toast, taskMenu, onRender: () => renderSummary() });
   inbox.initInbox($('#inbox'), { openEditor, toast });
   suggestions.init({ toast, render: () => { lastSig = ''; render(); } });
   categories.init({ toast, render: () => { lastSig = ''; render(); }, showFilter: (f) => { store.setUi('course', f); showTab('tasks'); lastSig = ''; render(); } });
+  // right-click (long-press on touch screens) on a task, a block, a time in the planner, a message or a category chip
+  ctxmenu.init({ resolve: menuAt, longPressSel: '#main .card, #inbox .inbox-item, #filters .chip[data-course]' });
   showTab(store.ui('tab', 'tasks'));
   // the "new task" button shrinks to a round button while scrolling, so it covers less of the list
   let lastY = 0;
@@ -349,6 +352,91 @@ function onMainClick(e) {
   }
   if (action === 'edit') openEditor(id);
   if (action === 'timer') openTimer(id);
+}
+
+/* ---------------------------------------------------- right-click menus ---- */
+
+// What a right-click (or a long-press on a touch screen) offers, by what's under it. null = the browser's own menu.
+function menuAt(target, at, e) {
+  if (!store.configured) return null;
+  if (target.closest('#planner')) return planner.menuAt(target, at, e);
+  const card = target.closest('#main .card[data-id]');
+  if (card) return taskMenu(card.dataset.id, 'list');
+  const msg = target.closest('#inbox .inbox-item[data-id]');
+  if (msg) return inbox.menuFor(msg.dataset.id, ctxmenu.copyText);
+  const chip = target.closest('#filters [data-course]');
+  if (chip) return chipMenu(chip.dataset.course);
+  return null;
+}
+
+/** A task's menu (the list, the planner's tray / deadlines). where: 'list' | 'tray' | 'planner'. */
+function taskMenu(id, where = 'list') {
+  const t = store.task(id);
+  if (!t) return null;
+  const open = t.status !== 'done' && t.status !== 'cancelled';
+  const running = timer.state()?.task_id === id;
+  const today = todayIL();
+  const links = (t.links || '').split('\n').map((x) => x.trim()).filter((x) => /^https?:\/\//.test(x));
+  const dueChoice = (label, d) => ({ label, on: (t.due_date || '') === d, run: () => setDue(t, d) });
+  return [
+    { title: t.title },
+    { label: 'עריכה', icon: 'edit', run: () => openEditor(id) },
+    open || running ? { label: running ? 'פתח את הטיימר' : 'התחל טיימר', icon: running ? 'timer' : 'play', run: () => openTimer(id) } : null,
+    open && where !== 'tray' && !store.taskArchived(t) ? { label: 'שבץ בתכנון', icon: 'plan', hint: matchMedia('(pointer: coarse)').matches ? 'ואז הקש על שעה' : 'ואז לחץ על שעה', run: () => { showTab('planner'); planner.selectForPlacing(id); } } : null,
+    { sep: true },
+    { label: 'סטטוס', choices: Object.entries(STATUS).map(([k, v]) => ({ label: v.label, on: t.status === k, run: () => setStatus(t, k) })) },
+    { label: 'הגשה', choices: [dueChoice('היום', today), dueChoice('מחר', addDays(today, 1)), dueChoice('בעוד שבוע', addDays(today, 7)), dueChoice('ללא', '')] },
+    { sep: true },
+    { label: 'שכפל…', icon: 'dup', hint: 'משימה חדשה עם אותם פרטים', run: () => openEditor(null, { prefill: {
+      title: t.title, course: t.course || '', due_date: t.due_date || '', due_time: t.due_time || '',
+      estimate_hours: t.estimate_hours || '', notes: t.notes || '', links: t.links || '' } }) },
+    ...links.slice(0, 3).map((u) => ({ label: `פתח ${prettyUrl(u)}`, icon: 'link', href: u })),
+    { label: 'העתק את השם', icon: 'copy', run: async () => toast((await ctxmenu.copyText(t.title)) ? 'השם הועתק' : 'לא הצלחתי להעתיק') },
+    { sep: true },
+    { label: 'מחיקה…', icon: 'trash', danger: true, run: () => {
+      if (confirm(`למחוק את „${t.title}”? (אפשר גם לסמן "בוטל" במקום)`)) { store.deleteTask(id); toast('המשימה נמחקה'); }
+    } },
+  ];
+}
+
+function setStatus(t, status) {
+  if (t.status === status) return;
+  const before = { id: t.id, status: t.status };
+  store.saveTask({ id: t.id, status });
+  const word = { todo: 'חזר ל„לא התחיל”', in_progress: 'בתהליך', done: 'הושלם', cancelled: 'בוטל' }[status];
+  toast(`„${t.title}” ${word}`, { label: 'בטל', fn: () => store.saveTask(before) });
+}
+
+function setDue(t, d) {
+  if ((t.due_date || '') === d) return;
+  const before = { id: t.id, due_date: t.due_date || '', due_time: t.due_time || '' };
+  store.saveTask({ id: t.id, due_date: d, due_time: d ? t.due_time || '' : '' });
+  toast(d ? `הגשה: ${dueLabel(d, d ? t.due_time : '')}` : 'בלי תאריך הגשה', { label: 'בטל', fn: () => store.saveTask(before) });
+}
+
+/** A category chip (or a meta category chip) above the list. */
+function chipMenu(value) {
+  const can = store.canSaveCategories;
+  if (value === 'all') return [{ label: 'ניהול קטגוריות…', icon: 'edit', run: () => categories.openManager() }];
+  if (value.startsWith('g:')) {
+    const g = store.group(value.slice(2));
+    if (!g) return null;
+    return [
+      { title: g.name },
+      { label: `משימה חדשה ב„${g.name}”`, icon: 'plus', run: () => openEditor(null, { prefill: { course: categories.defaultFor(value) } }) },
+      can ? { label: 'עריכה…', icon: 'edit', run: () => categories.openGroupForm(g.id) } : null,
+      can ? { label: 'העבר לארכיון…', icon: 'archive', run: () => categories.archiveGroup(g.id) } : null,
+    ];
+  }
+  const c = store.course(value);
+  if (!c) return null;
+  const name = categories.label(c.slug);
+  return [
+    { title: c.name_he || name },
+    { label: `משימה חדשה ב„${name}”`, icon: 'plus', run: () => openEditor(null, { prefill: { course: c.slug } }) },
+    can ? { label: 'עריכה…', icon: 'edit', run: () => categories.openCategoryForm(c.slug) } : null,
+    can ? { label: 'העבר לארכיון…', icon: 'archive', run: () => categories.archiveCat(c.slug) } : null,
+  ];
 }
 
 /* ---------------------------------------------------------- editor ---- */

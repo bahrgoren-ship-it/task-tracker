@@ -8,6 +8,9 @@
 // - A block is in Google Calendar as soon as it is placed (no drafts / "אשר תכנון" since backend v9; the backend
 //   turns an old 'draft' into 'planned'), and changes made there come back. Only a block whose "להציג ביומן
 //   Google" is unchecked stays out. The user's own calendar events are shown in grey as busy time.
+// - Right-click (menuAt): a block → edit, task, timer, state, move / duplicate to tomorrow, copy, calendar; an empty
+//   time → new block there, paste a copied block; a task in the tray / a deadline → the task's menu (from app.js).
+//   On a touch screen a long-press here drags, so it opens no menu.
 import { store } from './store.js';
 import { todayIL, addDays, dayDiff, weekday, shortDate, nowIL, fmtMinutes, dueLabel } from './dates.js';
 import { calendarState, calendarText, noticeHtml } from './notices.js';
@@ -17,13 +20,15 @@ const START_H = 6, END_H = 24;          // visible hours
 const SNAP = 15;                        // minutes
 const LONG_PRESS = 280;                 // ms before a touch becomes a drag
 
-let ui = {};                            // callbacks from app.js: openEditor, openTimer, toast
+let ui = {};                            // callbacks from app.js: openEditor, openTimer, toast, taskMenu
 let root;
 let view = { start: null, days: 7 };    // first visible day + number of days
 let selectedTask = null;                // tap-to-place mode
 let busyCache = {};                     // "from|to" → events
 let drag = null;                        // active drag state
 let lastSig = '';
+let lastPointer = 'mouse';              // type of the last pointer that went down here (touch: long-press = drag)
+let clip = null;                        // a copied block: { task_id, len, note, sync_calendar }
 
 const $ = (sel, r = root) => r.querySelector(sel);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -42,7 +47,6 @@ export function initPlanner(el, callbacks) {
   resetView();
   root.addEventListener('click', onClick);
   root.addEventListener('pointerdown', onPointerDown);
-  root.addEventListener('contextmenu', (e) => { if (e.target.closest('.pl-grid, .pl-tray')) e.preventDefault(); });
   document.addEventListener('touchmove', (e) => { if (drag && drag.active) e.preventDefault(); }, { passive: false });
   let lastHour = hourPx();
   window.addEventListener('resize', () => {
@@ -271,10 +275,10 @@ function slotFromPoint(dayEl, clientY) {
 
 function defaultLen() { return Math.max(15, Number(store.setting('default_block_minutes', '60')) || 60); }
 
-function createBlock(taskId, day, startMin, len = defaultLen()) {
+function createBlock(taskId, day, startMin, len = defaultLen(), extra = {}) {
   const endMin = Math.min(END_H * 60, startMin + len);
   const end = endMin >= 24 * 60 ? `${addDays(day, 1)} 00:00` : `${day} ${toHHMM(endMin)}`;
-  const id = store.saveBlock({ task_id: taskId, start: `${day} ${toHHMM(startMin)}`, end, state: 'planned' });
+  const id = store.saveBlock({ task_id: taskId, start: `${day} ${toHHMM(startMin)}`, end, state: 'planned', ...extra });
   const cal = calendarWhere([{ task_id: taskId, sync_calendar: '' }]);
   ui.toast(`נוסף בלוק · ${toHHMM(startMin)}${cal ? ` — נכנס ${cal}` : ''}`, { label: 'בטל', fn: () => store.deleteBlock(id) });
 }
@@ -318,6 +322,7 @@ function calendarNotice() {
 /* ------------------------------------------------------------ drag & drop ---- */
 
 function onPointerDown(e) {
+  lastPointer = e.pointerType || 'mouse';
   if (e.button > 0 || e.target.closest('[data-unplace]')) return;
   const resize = e.target.closest('[data-resize]');
   const blk = e.target.closest('[data-block]');
@@ -478,6 +483,98 @@ function cleanupListeners() {
   window.removeEventListener('pointermove', onPointerMove);
   window.removeEventListener('pointerup', onPointerUp);
   window.removeEventListener('pointercancel', onPointerCancel);
+}
+
+/* ------------------------------------------------------------ right-click ---- */
+
+/**
+ * The menu for a right-click inside the planner (see ctxmenu.js): items, false = nothing (and no browser menu),
+ * null = not ours. e = the contextmenu event (null for a long-press, which never reaches here).
+ */
+export function menuAt(target, at, e) {
+  if (!root || root.hidden || !target.closest('.pl-body')) return null;
+  const type = (e && e.pointerType) || lastPointer;
+  if (type === 'touch' || type === 'pen' || drag) return false; // a long-press on a touch screen drags here
+  const blk = target.closest('[data-block]');
+  if (blk) return blockMenu(blk.dataset.block);
+  const task = target.closest('[data-task]');
+  if (task) return ui.taskMenu?.(task.dataset.task, 'tray') || false;
+  const dl = target.closest('.deadline[data-edit]');
+  if (dl) return ui.taskMenu?.(dl.dataset.edit, 'planner') || false;
+  const day = target.closest('.pl-day');
+  if (day) return slotMenu(day.dataset.day, slotFromPoint(day, at.y));
+  return false;
+}
+
+/** From the task list's menu: pick this task, then a time on the grid places it (like tapping it in the tray). */
+export function selectForPlacing(taskId) {
+  selectedTask = taskId;
+  render(true);
+  root.querySelector(`.pl-tray [data-task="${CSS.escape(taskId)}"]`)?.scrollIntoView({ block: 'nearest' });
+}
+
+const nextDay = (stamp) => `${addDays(stamp.slice(0, 10), 1)} ${stamp.slice(11, 16)}`;
+
+function blockMenu(id) {
+  const b = store.block(id);
+  if (!b) return false;
+  const t = store.task(b.task_id);
+  const syncOn = store.setting('sync_blocks_to_calendar') === 'TRUE';
+  const len = Math.max(SNAP, minutes(b.start, b.end));
+  const url = eventUrl(b);
+  const state = b.state === 'draft' ? 'planned' : b.state;
+  return [
+    { title: `${t ? t.title : 'בלוק עבודה'} · ${b.start.slice(11, 16)}–${b.end.slice(11, 16)}` },
+    { label: 'עריכת הבלוק…', icon: 'edit', run: () => openBlockSheet(id) },
+    t ? { label: 'פתח את המשימה', icon: 'open', run: () => ui.openEditor(t.id) } : null,
+    t && isOpen(t) ? { label: 'התחל טיימר', icon: 'play', run: () => ui.openTimer(t.id) } : null,
+    { sep: true },
+    { label: 'מצב', choices: Object.entries(STATES).map(([k, v]) => ({ label: v, on: state === k, run: () => setBlockState(b, k) })) },
+    { sep: true },
+    { label: 'הזז למחר', icon: 'move', hint: 'אותה שעה', run: () => moveBlock(id, nextDay(b.start), nextDay(b.end)) },
+    { label: 'שכפל למחר', icon: 'dup', hint: 'אותה שעה', run: () => createBlock(b.task_id, addDays(b.start.slice(0, 10), 1), toMin(b.start.slice(11, 16)), len, { note: b.note || '', sync_calendar: b.sync_calendar || '' }) },
+    { label: 'העתק', icon: 'copy', hint: 'להדבקה בשעה אחרת', run: () => {
+      clip = { task_id: b.task_id, len, note: b.note || '', sync_calendar: b.sync_calendar || '' };
+      ui.toast('הבלוק הועתק — לחיצה ימנית על שעה פנויה ← הדבק');
+    } },
+    syncOn ? { label: 'להציג ביומן Google', checked: b.sync_calendar !== 'FALSE', run: () => {
+      const before = { id, sync_calendar: b.sync_calendar || '' };
+      const off = b.sync_calendar !== 'FALSE';
+      store.saveBlock({ id, sync_calendar: off ? 'FALSE' : '' });
+      ui.toast(off ? 'הבלוק יוצא מהיומן' : 'הבלוק נכנס ליומן', { label: 'בטל', fn: () => store.saveBlock(before) });
+    } } : null,
+    url ? { label: 'פתח ב-Google Calendar', icon: 'link', href: url } : null,
+    { sep: true },
+    { label: 'הסר מהלוח', icon: 'trash', danger: true, run: () => removeBlock(id) },
+  ];
+}
+
+function setBlockState(b, state) {
+  if ((b.state === 'draft' ? 'planned' : b.state) === state) return;
+  const before = { id: b.id, state: b.state };
+  store.saveBlock({ id: b.id, state });
+  const msg = state === 'skipped' ? 'סומן „דילגתי” — הבלוק הוסתר מהלוח' : state === 'done' ? 'סומן „בוצע”' : 'סומן „מתוכנן”';
+  ui.toast(msg, { label: 'בטל', fn: () => store.saveBlock(before) });
+}
+
+function slotMenu(day, startMin) {
+  const ct = clip && store.task(clip.task_id);
+  return [
+    { title: `יום ${weekday(day)} ${shortDate(day)} · ${toHHMM(startMin)}` },
+    { label: 'בלוק חדש כאן…', icon: 'plus', run: () => openChooser(day, startMin) },
+    ct ? { label: `הדבק: „${ct.title}”`, icon: 'paste', hint: fmtMinutes(clip.len), run: () => createBlock(clip.task_id, day, startMin, clip.len, { note: clip.note, sync_calendar: clip.sync_calendar }) } : null,
+  ];
+}
+
+/** The block's event in Google Calendar (eid = base64 of "<event id> <calendar id>"), or '' if it has none. */
+function eventUrl(b) {
+  const id = String(b.calendar_event_id || '');
+  const cal = b.calendar_id || store.setting('blocks_calendar_id', '');
+  if (!/@google\.com$/.test(id) || !cal) return '';
+  try {
+    const eid = btoa(unescape(encodeURIComponent(`${id.replace(/@google\.com$/, '')} ${cal}`))).replace(/=+$/, '');
+    return `https://calendar.google.com/calendar/event?eid=${encodeURIComponent(eid)}`;
+  } catch { return ''; }
 }
 
 /* --------------------------------------------------------------- sheets ---- */

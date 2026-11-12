@@ -13,6 +13,7 @@ Bahr's task tracker (homework first; may grow to all tasks): a Hebrew (RTL) inst
 | `docs/js/dates.js` | Date helpers (everything in Israel time, strings `yyyy-mm-dd` / `HH:MM`). |
 | `docs/js/timer.js` | Stopwatch / pomodoro. State lives in the Sheet (`settings.active_timer`) so devices share it; focus time is saved to `sessions`. |
 | `docs/js/planner.js` | Planner: custom RTL week grid, drag tasks from the tray into work blocks (`blocks`), move/resize, tap-to-place, busy layer from Google Calendar. A placed block is in Google Calendar at once (no drafts / "אשר תכנון" since v9). No external libraries. |
+| `docs/js/ctxmenu.js` | Right-click menus (long-press on touch screens): the menu component (position, keyboard, closing, touch long-press). What each menu offers is built where the thing lives: `taskMenu` / `chipMenu` in app.js, `menuAt` (blocks, empty times) in planner.js, `menuFor` (messages) in inbox.js. |
 | `docs/js/notices.js` | Status strings (`ai_status`, `moodle_status`, `calendar_status`) → plain Hebrew + what to do; `noticeHtml` (original text under „פרטים”, dismissable). |
 | `docs/js/suggestions.js` | Card on the tasks screen: pending rows of the `suggestions` tab (any AI proposes, Bahr approves): tasks, blocks, sessions, categories, meta categories. Validates, shows before → after, applies through store, undo. |
 | `docs/js/inbox.js` | "הודעות" screen: full Moodle messages + the AI's suggestions (add task / update task / not needed). A message is never a task by itself. |
@@ -64,6 +65,11 @@ Bahr's task tracker (homework first; may grow to all tasks): a Hebrew (RTL) inst
 - AI on the Gemini free tier: one request per batch of messages, Flash-Lite first, models that answer 429/5xx rest
   (`AI_REST` in Script Properties). Never mark a message as failed for busy/quota.
 - CSS class `.busy` belongs to the sync pill; the planner's calendar layer is `.cal-busy`.
+- **Right-click menus** (`ctxmenu.js`): on tasks, planner blocks / empty times / tray tasks / deadlines, Moodle
+  messages and category chips. Every action there also exists elsewhere (editor, sheets, buttons) — the menu is a
+  shortcut, never the only way. Keep the browser's own menu for links, text fields, selected text and Shift+right-click.
+  On touch screens a long-press opens the same menu, except inside the planner (a long-press drags there) and on a
+  message's text (it stays selectable). A menu opened by a finger ignores that finger's lift (`swallowLift`).
 - `batch` drops upserts that would create half a row (REQUIRED) and returns fresh rows; the app applies them.
 
 ## Roadmap

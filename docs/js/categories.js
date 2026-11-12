@@ -632,7 +632,7 @@ function saveCatForm(form) {
 
 /* -------------------------------------------------------- archive / delete ---- */
 
-function archiveGroup(id) {
+export function archiveGroup(id) {
   const g = store.group(id);
   if (!g) return;
   const cats = categoriesOf(g, { archived: true });
@@ -650,7 +650,7 @@ function archiveGroup(id) {
   draw();
 }
 
-function archiveCat(slug) {
+export function archiveCat(slug) {
   const c = store.course(slug);
   if (!c) return;
   const n = counts()(slug);
