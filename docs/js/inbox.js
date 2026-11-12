@@ -333,7 +333,12 @@ async function onClick(e) {
 
   const btn = e.target.closest('[data-act]');
   if (!btn) return;
-  const act = btn.dataset.act;
+  return doAct(btn.dataset.act, m);
+}
+
+/** A message's actions — from its buttons and from its right-click menu. */
+async function doAct(act, m) {
+  const id = m.id;
   if (act === 'expand') { if (expanded.has(id)) expanded.delete(id); else expanded.add(id); return render(true); }
   if (act === 'read') {
     const anyAccepted = suggestionsOf(m).some((s) => s.state === 'accepted');
@@ -366,4 +371,26 @@ async function onClick(e) {
     if (after && aiPending(after) && (as.kind === 'waiting' || as.kind === 'error')) ui.toast(aiText(as).title);
     render(true);
   }
+}
+
+/* ------------------------------------------------------------ right-click ---- */
+
+/** The menu for a message (see ctxmenu.js). copyText(text) → Promise<boolean>. */
+export function menuFor(id, copyText) {
+  const m = store.data.moodle_inbox.find((x) => x.id === id);
+  if (!m) return null;
+  const url = messageUrl(m);
+  const linked = m.task_id && store.task(m.task_id);
+  const handled = m.status !== 'new';
+  return [
+    { title: m.title },
+    url ? { label: /drive\.google\.com/.test(url) ? 'פתח ב-Drive' : url !== m.url ? 'פתח את לוח ההודעות במודל' : 'פתח במודל', icon: 'link', href: url } : null,
+    !handled && m.kind === 'date_change' && linked ? { label: 'עדכן את התאריך במשימה', icon: 'cal', run: () => doAct('redate', m) } : null,
+    handled ? { label: 'החזר לחדשות', icon: 'undo', run: () => doAct('reopen', m) } : { label: 'סמן כנקרא', icon: 'read', run: () => doAct('read', m) },
+    linked ? { label: `פתח את המשימה „${linked.title}”`, icon: 'open', run: () => ui.openEditor(linked.id) } : null,
+    m.kind !== 'date_change' ? { label: 'משימה ידנית…', icon: 'plus', run: () => doAct('manual', m) } : null,
+    m.kind !== 'date_change' && store.apiVersion >= 4 && aiConnected() && !reviewing.has(id) ? { label: 'בדוק שוב עם AI', icon: 'ai', run: () => doAct('rereview', m) } : null,
+    { sep: true },
+    m.text ? { label: 'העתק את הטקסט', icon: 'copy', run: async () => ui.toast((await copyText(`${m.title}\n\n${m.text}`)) ? 'הטקסט הועתק' : 'לא הצלחתי להעתיק') } : null,
+  ];
 }
