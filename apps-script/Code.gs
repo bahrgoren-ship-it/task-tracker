@@ -3,7 +3,7 @@
  *
  * What it does: a small JSON API over the Sheet, used by the app (docs/ folder of this repo).
  * Every request must carry the secret key stored in Script Properties (API_KEY).
- * Also: Google Calendar sync (confirmed work blocks, two-way, each into its category's calendar: courses → 'לימודים',
+ * Also: Google Calendar sync (work blocks, two-way, each into its category's calendar: courses → 'לימודים',
  * other categories → 'Bahr Goren' unless a category picks its own; changes made in Google Calendar come back within
  * about a minute through calendar triggers; optional deadlines),
  * a Moodle check (announcements + assignments → moodle_inbox), run every 10 minutes by a trigger that setup()
@@ -26,7 +26,8 @@ const TZ = 'Asia/Jerusalem';
 const API_VERSION = 9; // 5: calendars action, chosen blocks calendar, batch returns fresh rows · 6: suggestions tab
 // · 7: categories and meta categories (tabs courses + groups) written by the app, archive
 // · 8: a Google Calendar per category (courses.calendar; defaults: courses / everything else), blocks.calendar_id
-// · 9: changes made in Google Calendar come back within about a minute (calendar triggers; bootstrap {pull: 1})
+// · 9: changes made in Google Calendar come back within about a minute (calendar triggers; bootstrap {pull: 1});
+//   no drafts / "אשר תכנון" any more — a block placed on the planner is in the calendar at once
 const SCHEMA_VERSION = 9; // bump when SCHEMA / settings change; the Sheet is migrated automatically
 
 // Column order of each tab. Must match row 1 of the Sheet (see SCHEMA.md).
@@ -59,7 +60,7 @@ const DROPPED = { tasks: ['grade'] };
 // Default settings rows: [key, value, meaning]. Missing keys are added by migrate_.
 const DEFAULT_SETTINGS = [
   ['sync_deadlines_to_calendar', 'FALSE', "TRUE = every task deadline appears in the Google Calendar 'משימות – הגשות'."],
-  ['sync_blocks_to_calendar', 'TRUE', "TRUE = confirmed work blocks (after 'אשר תכנון') appear in Google Calendar, each in its category's calendar: courses.calendar, else blocks_calendar_name (courses) / other_blocks_calendar_name (everything else). Two-way, within about a minute: moving, resizing or deleting the event there, editing its description (= the block's note) or moving it to another calendar changes the block."],
+  ['sync_blocks_to_calendar', 'TRUE', "TRUE = work blocks appear in Google Calendar as soon as they are placed on the planner (not 'skipped' ones, nor blocks with sync_calendar FALSE), each in its category's calendar: courses.calendar, else blocks_calendar_name (courses) / other_blocks_calendar_name (everything else). Two-way, within about a minute: moving, resizing or deleting the event there, editing its description (= the block's note) or moving it to another calendar changes the block."],
   ['blocks_calendar_name', 'לימודים', "Google Calendar for the work blocks of courses (categories in a semester) that have no calendar of their own (courses.calendar). Empty = a separate calendar 'משימות – בלוקי עבודה'."],
   ['other_blocks_calendar_name', 'Bahr Goren', "Google Calendar for the work blocks of every other category, and of tasks without a category, when the category has no calendar of its own (courses.calendar). Empty = a separate calendar 'משימות – בלוקי עבודה'."],
   ['default_block_minutes', '60', 'Length of a new work block dropped on the planner.'],
@@ -237,6 +238,7 @@ function batch_(ops) {
     if (WRITABLE.indexOf(o.table) < 0) throw new Error('table not writable: ' + o.table);
     if (o.op === 'upsert') {
       const patch = o.row || {}, id = patch[KEY_COLUMN[o.table]], need = REQUIRED[o.table];
+      if (o.table === 'blocks' && patch.state === 'draft') patch.state = 'planned'; // no drafts since v9 (an old app copy)
       if (need && id && need.some(function (c) { return !patch[c]; }) && !rowExists_(o.table, id)) {
         results.push({ table: o.table, deleted: id }); // gone: tell the app to drop it too
         return;
@@ -452,6 +454,8 @@ function migrate_() {
   // schema 8: Bahr asked for the blocks of every category that isn't a course to go to his calendar 'Bahr Goren'
   if (existing.indexOf('other_blocks_calendar_name') < 0) setSetting_('other_blocks_calendar_name', otherCalendarDefault_());
   const grouped = groupCourses_(); // schema 7: the existing courses go into their semester
+  // schema 9: Bahr dropped "אשר תכנון" — what is on the planner is in the calendar, so drafts become planned blocks
+  readTable_('blocks').forEach(function (b) { if (b.state === 'draft') upsert_('blocks', { id: b.id, state: 'planned' }); });
   paintCourseColors_(sheet_('courses'));
   upsert_('settings', { key: 'schema_version', value: String(SCHEMA_VERSION) });
   readTable_('tasks').forEach(function (t) { recomputeSpent_(t.id); });
@@ -513,7 +517,8 @@ const AI_HELP = [
   '  tasks:    title, course (a slug from the courses tab), status (todo | in_progress | done | cancelled), due_date (yyyy-mm-dd),',
   '            due_time (HH:MM), estimate_hours (number), notes, links (one URL per line).',
   '            create may also include "blocks": [{"start":"2026-11-10 18:00","end":"2026-11-10 19:00"}] to plan work time for it.',
-  '  blocks:   task_id, start, end ("yyyy-mm-dd HH:MM", Israel time), state (draft | planned | done | skipped), note.',
+  '  blocks:   task_id, start, end ("yyyy-mm-dd HH:MM", Israel time), state (planned | done | skipped), note.',
+  '            A block is in Bahr\'s Google Calendar as soon as it exists (once he approves the suggestion).',
   '  sessions: task_id, start, end, minutes (number), note.',
   '  courses:  name_he, short_he (short label), group (an id from the groups tab), color (#RRGGBB), number, moodle_course_id,',
   '            moodle_folder (path under Technion Studies), active (TRUE | FALSE = archived),',
@@ -635,7 +640,7 @@ function styleTab_(sh, table, n) {
     ]);
   }
   if (table === 'sessions') list('kind', ['stopwatch', 'pomodoro', 'manual']);
-  if (table === 'blocks') list('state', ['draft', 'planned', 'done', 'skipped']);
+  if (table === 'blocks') list('state', ['planned', 'done', 'skipped']);
   if (table === 'courses') { hintList('active', ['TRUE', 'FALSE']); idsOf('group', 'groups'); }
   if (table === 'groups') { hintList('kind', ['semester', 'project', 'general']); hintList('active', ['TRUE', 'FALSE']); }
   if (table === 'moodle_inbox') list('status', ['new', 'accepted', 'ignored']);
@@ -725,7 +730,8 @@ function now_() {
 function setSetting_(key, value) { upsert_('settings', { key: key, value: String(value) }, { touch: false }); }
 
 /* ------------------------------------------------------- Google Calendar ---- */
-// Confirmed work blocks ("אשר תכנון") go to one of Bahr's own Google calendars, chosen per category:
+// Work blocks go to one of Bahr's own Google calendars as soon as they are placed on the planner (all but 'skipped' ones
+// and those with sync_calendar FALSE; there are no drafts since v9), chosen per category:
 // - the category's own calendar (courses.calendar, a calendar name), when it has one;
 // - otherwise the default for its kind: a course (a category in a semester meta category) → settings.blocks_calendar_name
 //   ('לימודים'); every other category, and a task without a category → settings.other_blocks_calendar_name ('Bahr Goren').
@@ -932,9 +938,9 @@ function syncTaskEvent_(task, cal, enabled, courses) {
   }
 }
 
+/** Should this block be an event? Everything on the planner except skipped ones ('draft' = an old value, as planned). */
 function blockWanted_(b, enabled, tasks) {
-  return enabled && tasks[b.task_id] && (b.state === 'planned' || b.state === 'done') && b.sync_calendar !== 'FALSE' &&
-    b.start && b.end;
+  return enabled && tasks[b.task_id] && b.state !== 'skipped' && b.sync_calendar !== 'FALSE' && b.start && b.end;
 }
 
 /**

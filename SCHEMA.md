@@ -70,8 +70,8 @@ A task can have any number of blocks.
 | `id` | `b_xxxxxx`. |
 | `task_id` | The `tasks.id` it belongs to. |
 | `start`, `end` | Date-times. Default length: `settings.default_block_minutes` (60). |
-| `state` | `draft` (planning, never on the calendar) · `planned` · `done` · `skipped` |
-| `sync_calendar` | Empty = follow the setting `sync_blocks_to_calendar`; `FALSE` = never put this block in the calendar. |
+| `state` | `planned` · `done` · `skipped`. (`draft` is an old value: there are no drafts since schema 9 — the backend saves it as `planned`, and the schema-9 migration turned existing drafts into `planned`.) |
+| `sync_calendar` | Empty = follow the setting `sync_blocks_to_calendar`; `FALSE` = never put this block in the calendar (the block's „להציג ביומן Google” box). |
 | `calendar_event_id` | App-managed. |
 | `note` | Optional: what to do in this block. |
 | `updated_at` | Timestamp. |
@@ -172,8 +172,9 @@ block events before schema 8; only a fallback for blocks without `calendar_id`),
   (⏰ open / ✓ done; cancelled or deleted tasks are removed). One-way: Sheet → Calendar.
 - `sync_blocks_to_calendar=TRUE` → planned and done work blocks are events in Bahr's own calendars, each in its
   category's calendar: `courses.calendar` if set, else `blocks_calendar_name` for courses (**לימודים**) and
-  `other_blocks_calendar_name` for every other category and for tasks without a category (**Bahr Goren**). Drafts
-  never go to the calendar.
+  `other_blocks_calendar_name` for every other category and for tasks without a category (**Bahr Goren**). A block
+  is in the calendar as soon as it is placed on the planner (no drafts or „אשר תכנון” since schema 9); only `skipped`
+  blocks and blocks with `sync_calendar` = `FALSE` stay out.
 - **Two-way.** What Bahr changes in Google Calendar comes back to the block: moving or resizing the event changes the
   block's times; editing its description changes the block's `note` (the text before the app's footer, as one line);
   moving it to another calendar is followed (`calendar_id`) and the event stays there; deleting it deletes the block.
@@ -198,7 +199,7 @@ block events before schema 8; only a fallback for blocks without `calendar_id`),
   and keeps all data. Schema 7 added the `groups` tab and `courses.group/sort/archived_at`, and put the existing
   courses into the meta category `winter-2026-2027`. Schema 8 added `courses.calendar`, `blocks.calendar_id` and the
   setting `other_blocks_calendar_name` (`Bahr Goren`; his main calendar's name if no calendar is called that).
-  Schema 9 added the setting `calendar_watch` (no column changes).
+  Schema 9 added the setting `calendar_watch` (no column changes) and turned drafts into planned blocks.
 - **The app** (https://bahrgoren-ship-it.github.io/task-tracker/) talks to an Apps Script web app bound to the
   Sheet (code: `apps-script/Code.gs` in the GitHub repo `bahrgoren-ship-it/task-tracker`). API: POST JSON
   `{key, action}` with `action` = `ping` · `bootstrap` (returns all tabs; `pull: 1` = first bring in changes made in Google Calendar) · `batch` (`ops: [{op:'upsert', table, row} |

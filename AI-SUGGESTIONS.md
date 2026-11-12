@@ -23,7 +23,8 @@ Allowed fields:
   tasks:    title, course (a slug from the courses tab), status (todo | in_progress | done | cancelled), due_date (yyyy-mm-dd),
             due_time (HH:MM), estimate_hours (number), notes, links (one URL per line).
             create may also include "blocks": [{"start":"2026-11-10 18:00","end":"2026-11-10 19:00"}] to plan work time for it.
-  blocks:   task_id, start, end ("yyyy-mm-dd HH:MM", Israel time), state (draft | planned | done | skipped), note.
+  blocks:   task_id, start, end ("yyyy-mm-dd HH:MM", Israel time), state (planned | done | skipped), note.
+            A block is in Bahr's Google Calendar as soon as it exists (once he approves the suggestion).
   sessions: task_id, start, end, minutes (number), note.
   courses:  name_he, short_he (short label), group (an id from the groups tab), color (#RRGGBB), number, moodle_course_id,
             moodle_folder (path under Technion Studies), active (TRUE | FALSE = archived),

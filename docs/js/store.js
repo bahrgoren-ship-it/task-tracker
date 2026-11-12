@@ -148,7 +148,7 @@ class Store {
     }
   }
 
-  // The rows as the server saved them (e.g. a confirmed block now has its Google Calendar event, a task its total
+  // The rows as the server saved them (e.g. a block now has its Google Calendar event, a task its total
   // time) — unless this device changed that row again in the meantime. "deleted" = the row no longer exists.
   applyResults(results) {
     if (!Array.isArray(results)) return;
@@ -233,7 +233,7 @@ class Store {
   /* ---------- work blocks (planner) ---------- */
   saveBlock(row) {
     const full = { ...row, updated_at: nowStampIL() };
-    if (!full.id) { full.id = newId('b'); full.state = full.state || 'draft'; full.sync_calendar = full.sync_calendar ?? ''; full.calendar_event_id = ''; full.note = full.note || ''; }
+    if (!full.id) { full.id = newId('b'); full.state = full.state || 'planned'; full.sync_calendar = full.sync_calendar ?? ''; full.calendar_event_id = ''; full.note = full.note || ''; }
     this.change({ op: 'upsert', table: 'blocks', row: full });
     return full.id;
   }

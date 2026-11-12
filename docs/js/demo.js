@@ -63,7 +63,7 @@ function seed() {
     ],
     blocks: [
       { id: 'b_demo01', task_id: 't_demo03', start: `${addDays(t, 1)} 10:00`, end: `${addDays(t, 1)} 12:00`, state: 'planned', sync_calendar: '', calendar_event_id: '', note: '', updated_at: now, calendar_id: '' },
-      { id: 'b_demo02', task_id: 't_demo04', start: `${t} 18:00`, end: `${t} 19:00`, state: 'draft', sync_calendar: '', calendar_event_id: '', note: '', updated_at: now, calendar_id: '' },
+      { id: 'b_demo02', task_id: 't_demo04', start: `${t} 18:00`, end: `${t} 19:00`, state: 'planned', sync_calendar: '', calendar_event_id: '', note: '', updated_at: now, calendar_id: '' },
     ],
     courses: COURSES,
     groups: GROUPS.map((g) => ({ ...g, created_at: now, updated_at: now })),
