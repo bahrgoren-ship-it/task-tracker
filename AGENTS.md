@@ -43,6 +43,11 @@ Bahr's task tracker (homework first; may grow to all tasks): a Hebrew (RTL) inst
   only while nothing uses it, and the Moodle check reads only courses with a `moodle_course_id` that aren't archived.
 - Saving categories needs backend v7: the app checks `store.canSaveCategories` (an older backend would refuse the
   whole batch, so nothing for `courses` / `groups` may be queued before that).
+- **Calendar per category (backend v8).** A block's event goes to its task's category's calendar: `courses.calendar`,
+  else `blocks_calendar_name` for courses (categories in a semester) / `other_blocks_calendar_name` for everything else
+  (`calendarNameFor_` in Code.gs, `calendarOf` in categories.js — keep the two the same). `blocks.calendar_id` = the
+  calendar holding the event now; `syncBlockEvent_` moves the event when they differ. With an older backend the app hides
+  the per-category choice (`categories.hasCalendarPerCategory()`).
 - Look ("a student diary on graph paper"): colour tokens live at the top of `styles.css` — ink on cool paper,
   one blue accent, red only for overdue / due times, course colour as the only other colour. Font: IBM Plex Sans
   Hebrew. Tasks are grouped by day into one list per day (rows with dividers), with the deadline at the end of
@@ -58,4 +63,5 @@ Bahr's task tracker (homework first; may grow to all tasks): a Hebrew (RTL) inst
 3. ✅ Planner + Google Calendar sync (deadlines one-way, work blocks two-way). 4. ✅ Moodle inbox (announcements +
 assignments, every 15 min) + AI review (Gemini suggests tasks not already covered); ✅ Windows Task Scheduler for the file sync (moodle-dl) on Bahr's PC; ✅ announcements saved to Drive from the cloud. 5. AI procedures.
 6. ✅ Categories and meta categories edited in the app, with an archive (schema 7).
+7. ✅ A Google Calendar per category, with defaults for courses and for everything else (schema 8).
 Tests (Playwright + fake Apps Script services) are not in the repo; keep behaviour covered when changing things.

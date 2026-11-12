@@ -26,7 +26,9 @@ Allowed fields:
   blocks:   task_id, start, end ("yyyy-mm-dd HH:MM", Israel time), state (draft | planned | done | skipped), note.
   sessions: task_id, start, end, minutes (number), note.
   courses:  name_he, short_he (short label), group (an id from the groups tab), color (#RRGGBB), number, moodle_course_id,
-            moodle_folder (path under Technion Studies), active (TRUE | FALSE = archived).
+            moodle_folder (path under Technion Studies), active (TRUE | FALSE = archived),
+            calendar (a Google Calendar name for its work blocks; empty = the default from settings:
+            blocks_calendar_name for courses, other_blocks_calendar_name for every other category).
             create needs name_he and group, and may include slug (lowercase English, e.g. "statistics-2").
   groups:   name, kind (semester | project | general), active (TRUE | FALSE = archived).
             A new project / general group starts with one category of the same name, so tasks can go into it.

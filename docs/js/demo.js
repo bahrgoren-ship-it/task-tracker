@@ -21,7 +21,7 @@ const COURSES = [
   ['intro-cs', 'מבוא למדעי המחשב', 'מבוא למדמ״ח', '#2E8A87', '', '', 'g_spring'],
   ['calculus-1', 'חשבון דיפרנציאלי ואינטגרלי 1', 'חדו״א 1', '#B8902A', '', '', 'g_spring'],
 ].map(([slug, name_he, short_he, color, moodle, forum, group], i) => ({ slug, name_he, short_he, color, active: 'TRUE', moodle_course_id: moodle,
-  moodle_news_forum_id: forum, group, sort: String(i + 1), archived_at: '' }));
+  moodle_news_forum_id: forum, group, sort: String(i + 1), archived_at: '', calendar: '' }));
 // like the backend: a change to a row that no longer exists, without these fields, is dropped (not half-created)
 const REQUIRED = { tasks: ['title'], sessions: ['task_id', 'start'], blocks: ['task_id', 'start', 'end'], courses: ['name_he'], groups: ['name'],
   moodle_inbox: ['moodle_ref'], suggestions: ['op'] };
@@ -62,14 +62,15 @@ function seed() {
         minutes: '50', kind: 'pomodoro', note: '', updated_at: now },
     ],
     blocks: [
-      { id: 'b_demo01', task_id: 't_demo03', start: `${addDays(t, 1)} 10:00`, end: `${addDays(t, 1)} 12:00`, state: 'planned', sync_calendar: '', calendar_event_id: '', note: '', updated_at: now },
-      { id: 'b_demo02', task_id: 't_demo04', start: `${t} 18:00`, end: `${t} 19:00`, state: 'draft', sync_calendar: '', calendar_event_id: '', note: '', updated_at: now },
+      { id: 'b_demo01', task_id: 't_demo03', start: `${addDays(t, 1)} 10:00`, end: `${addDays(t, 1)} 12:00`, state: 'planned', sync_calendar: '', calendar_event_id: '', note: '', updated_at: now, calendar_id: '' },
+      { id: 'b_demo02', task_id: 't_demo04', start: `${t} 18:00`, end: `${t} 19:00`, state: 'draft', sync_calendar: '', calendar_event_id: '', note: '', updated_at: now, calendar_id: '' },
     ],
     courses: COURSES,
     groups: GROUPS.map((g) => ({ ...g, created_at: now, updated_at: now })),
     settings: [{ key: 'default_block_minutes', value: '60' }, { key: 'ai_status', value: `ok · 3 reviewed · ${now} · gemini-flash-lite (הדגמה)` },
       { key: 'moodle_status', value: 'ok · הדגמה' }, { key: 'moodle_last_check', value: now },
       { key: 'sync_blocks_to_calendar', value: 'TRUE' }, { key: 'blocks_calendar_name', value: 'לימודים' },
+      { key: 'other_blocks_calendar_name', value: 'אישי' },
       { key: 'calendar_status', value: `ok · ${now}` }],
     suggestions: [
       { id: 'sg_demo1', status: 'pending', summary: 'לתכנן שעתיים לתרגיל בית 1 ביום רביעי בערב', table: 'blocks', op: 'create', row_id: '',
@@ -135,8 +136,8 @@ export class DemoBackend {
 
   async handle(p) {
     await new Promise((r) => setTimeout(r, 150));
-    if (p.action === 'ping') return { api_version: 7, now: nowStampIL(), demo: true };
-    if (p.action === 'bootstrap') return { suggestions: [], groups: [], ...structuredClone(this.db), api_version: 7 };
+    if (p.action === 'ping') return { api_version: 8, now: nowStampIL(), demo: true };
+    if (p.action === 'bootstrap') return { suggestions: [], groups: [], ...structuredClone(this.db), api_version: 8 };
     if (p.action === 'calendars') {
       return { calendars: [{ name: 'bahr.goren@gmail.com', primary: true }, { name: 'לימודים' }, { name: 'אישי' }].map((c) => ({ id: c.name, color: '#4285F4', primary: false, ...c })),
         chosen: (this.db.settings.find((r) => r.key === 'blocks_calendar_name') || {}).value || '' };

@@ -10,6 +10,10 @@
 //   points at something archived is the archive view (with a banner and a chip to leave it).
 // - The manager sheet (#catSheet) lists everything; its forms (add / edit) open in the same sheet.
 // - Saving needs backend v7 (store.canSaveCategories). With an older backend the manager is read-only.
+// - Google Calendar: each category's confirmed work blocks go to its own calendar (column `calendar`), or when it has
+//   none to the default for its kind: courses (categories in a semester) → settings.blocks_calendar_name ('לימודים'),
+//   every other category and tasks without one → settings.other_blocks_calendar_name ('Bahr Goren'). The choice is in
+//   the category form. Needs backend v8 (CALENDAR_API); before that every block went to blocks_calendar_name.
 import { store } from './store.js';
 import { todayIL, shortDate } from './dates.js';
 
@@ -39,6 +43,25 @@ export const ICON = {
 /* ------------------------------------------------------------ the data ---- */
 
 const isActive = (row) => !!row && row.active !== 'FALSE';
+
+/* ------------------------------------------------- Google Calendar per category ---- */
+
+export const CALENDAR_API = 8;
+export const APP_CALENDAR = 'משימות – בלוקי עבודה'; // the app's own calendar ('' in a setting = this one)
+export const hasCalendarPerCategory = () => store.isDemo || store.apiVersion >= CALENDAR_API;
+/** A calendar name for showing ('' = the app's own calendar). */
+export const calLabel = (name) => name || APP_CALENDAR;
+/** The default calendar of the categories in meta category g (no g: not a course). */
+export function defaultCalendar(g) {
+  if (!hasCalendarPerCategory() || (g && g.kind === 'semester')) return store.setting('blocks_calendar_name', '');
+  return store.setting('other_blocks_calendar_name', '');
+}
+/** The calendar a category's confirmed work blocks go to ('' = the app's own). c = a row of courses, or none. */
+export function calendarOf(c) {
+  const own = hasCalendarPerCategory() && c ? String(c.calendar || '').trim() : '';
+  return own || defaultCalendar(c ? groupOf(c) : null);
+}
+let calendarList = null; // Bahr's own calendars, asked from the backend once per page load
 const sortNum = (v) => (String(v ?? '').trim() !== '' && Number.isFinite(Number(v)) ? Number(v) : 1e9);
 const bySort = (key) => (a, b) => sortNum(a.sort) - sortNum(b.sort) || String(a[key] || '').localeCompare(String(b[key] || ''), 'he');
 export const kindOf = (g) => KIND[g && g.kind] || KIND.general;
@@ -235,6 +258,7 @@ function draw() {
   } else {
     lastSig = '';
     d.innerHTML = view.mode === 'group' ? groupFormHtml() : catFormHtml();
+    if (view.mode === 'cat') fillCalendarChoices($('form', d));
   }
 }
 
@@ -414,6 +438,7 @@ function catFormHtml() {
       <fieldset class="field"><legend>צבע</legend>
         <div class="swatches">${colors.map((p) => `<label style="--c:${esc(p)}"><input type="radio" name="color" value="${esc(p)}" ${String(p).toUpperCase() === String(color).toUpperCase() ? 'checked' : ''} aria-label="${esc(p)}"><span></span></label>`).join('')}</div>
       </fieldset>
+      ${calendarFieldHtml(c, g)}
       <details class="moodle-box" data-moodle ${showMoodle ? '' : 'hidden'} ${c && (c.moodle_course_id || c.moodle_folder) ? '' : 'open'}>
         <summary>מודל ו-Drive (לקורס, לא חובה)</summary>
         <div class="moodle-fields">
@@ -439,6 +464,41 @@ function catFormHtml() {
       </div>
     </footer>
   </form>`;
+}
+
+/** The "which Google Calendar" field of the category form (backend v8+). */
+function calendarFieldHtml(c, g) {
+  if (!hasCalendarPerCategory()) return '';
+  const own = c ? String(c.calendar || '').trim() : '';
+  const off = store.setting('sync_blocks_to_calendar') !== 'TRUE';
+  return `<label class="field"><span>יומן Google לבלוקי עבודה</span>
+      <select name="calendar" data-cal-pick>
+        <option value="" ${own ? '' : 'selected'}>${esc(defaultOptionLabel(g))}</option>
+        ${own ? `<option value="${esc(own)}" selected>${esc(own)}</option>` : ''}
+      </select></label>
+    <p class="hint small field-hint">${off ? 'הסנכרון ליומן כבוי כרגע (⚙️ הגדרות → יומן Google).'
+      : 'הבלוקים המאושרים של המשימות כאן נכנסים ליומן הזה. כשמחליפים יומן, הבלוקים עוברים אליו.'}</p>`;
+}
+function defaultOptionLabel(g) {
+  return `ברירת המחדל${g && g.kind === 'semester' ? ' לקורסים' : ''}: ${calLabel(defaultCalendar(g))}`;
+}
+
+/** Fills the category form's calendar list with Bahr's calendars (keeps the current choice). */
+async function fillCalendarChoices(form) {
+  const sel = form && $('[data-cal-pick]', form);
+  if (!sel || !store.configured) return;
+  try {
+    if (!calendarList) calendarList = (await store.action('calendars')).calendars || [];
+  } catch { return; } // offline / older backend: only the current choice is shown
+  if (!sel.isConnected) return;
+  const current = sel.value;
+  const names = calendarList.filter((x) => x.name !== APP_CALENDAR)
+    .map((x) => ({ value: x.name, label: x.primary ? `${x.name} (היומן הראשי)` : x.name }));
+  if (current && current !== APP_CALENDAR && !names.some((n) => n.value === current)) names.unshift({ value: current, label: `${current} (לא נמצא)` });
+  names.push({ value: APP_CALENDAR, label: `יומן נפרד: ${APP_CALENDAR}` });
+  sel.innerHTML = `<option value="">${esc(sel.options[0].textContent)}</option>`
+    + names.map((n) => `<option value="${esc(n.value)}">${esc(n.label)}</option>`).join('');
+  sel.value = current;
 }
 
 /** "575" or a course link (…/course/view.php?id=575#section-2) → "575"; '' → ''; null = not understood. */
@@ -482,6 +542,8 @@ function onChange(e) {
     const g = store.group(e.target.value);
     const box = $('[data-moodle]', form);
     if (box && g && g.kind === 'semester') box.hidden = false;
+    const def = $('[data-cal-pick] option[value=""]', form); // the default calendar depends on the meta category
+    if (def) def.textContent = defaultOptionLabel(g);
   }
 }
 
@@ -550,6 +612,7 @@ function saveCatForm(form) {
     number: form.number.value.trim(), moodle_course_id: mid,
     moodle_folder: form.moodle_folder.value.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '').replace(/^Technion Studies\//, ''),
   };
+  if (form.calendar) fields.calendar = form.calendar.value;
   if (!fields.group) { msg.textContent = 'בחר קטגוריית־על.'; return; }
   if (view.slug) {
     const c = store.course(view.slug);

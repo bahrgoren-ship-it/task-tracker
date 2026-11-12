@@ -15,7 +15,7 @@ const FIELDS = {
   tasks: ['title', 'course', 'status', 'due_date', 'due_time', 'estimate_hours', 'notes', 'links'],
   blocks: ['task_id', 'start', 'end', 'state', 'note'],
   sessions: ['task_id', 'start', 'end', 'minutes', 'note'],
-  courses: ['slug', 'name_he', 'short_he', 'group', 'color', 'number', 'moodle_course_id', 'moodle_folder', 'active'],
+  courses: ['slug', 'name_he', 'short_he', 'group', 'color', 'number', 'moodle_course_id', 'moodle_folder', 'active', 'calendar'],
   groups: ['name', 'kind', 'active'],
 };
 const OPS = { create: 'create', add: 'create', new: 'create', insert: 'create', update: 'update', edit: 'update',
@@ -26,7 +26,7 @@ const TABLES = { tasks: 'tasks', task: 'tasks', blocks: 'blocks', block: 'blocks
 const LABEL = { title: 'שם', course: 'קורס', status: 'סטטוס', due_date: 'תאריך הגשה', due_time: 'שעה', estimate_hours: 'הערכת זמן',
   notes: 'הערות', links: 'קישורים', task_id: 'משימה', start: 'התחלה', end: 'סוף', state: 'מצב', note: 'הערה', minutes: 'דקות', blocks: 'בלוקי עבודה',
   name_he: 'שם', short_he: 'שם קצר', group: 'קטגוריית־על', color: 'צבע', number: 'מספר קורס', moodle_course_id: 'קורס במודל',
-  moodle_folder: 'תיקייה ב-Drive', active: 'מצב', name: 'שם', kind: 'סוג', slug: 'מזהה' };
+  moodle_folder: 'תיקייה ב-Drive', calendar: 'יומן', active: 'מצב', name: 'שם', kind: 'סוג', slug: 'מזהה' };
 const STATUS_HE = { todo: 'לא התחיל', in_progress: 'בתהליך', done: 'הושלם', cancelled: 'בוטל' };
 const STATE_HE = { draft: 'טיוטה', planned: 'מתוכנן', done: 'בוצע', skipped: 'דילגתי' };
 const WHAT = { tasks: 'משימה', blocks: 'בלוק עבודה', sessions: 'זמן עבודה', courses: 'קטגוריה', groups: 'קטגוריית־על' };
