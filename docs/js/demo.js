@@ -136,8 +136,8 @@ export class DemoBackend {
 
   async handle(p) {
     await new Promise((r) => setTimeout(r, 150));
-    if (p.action === 'ping') return { api_version: 8, now: nowStampIL(), demo: true };
-    if (p.action === 'bootstrap') return { suggestions: [], groups: [], ...structuredClone(this.db), api_version: 8 };
+    if (p.action === 'ping') return { api_version: 9, now: nowStampIL(), demo: true };
+    if (p.action === 'bootstrap') return { suggestions: [], groups: [], ...structuredClone(this.db), api_version: 9 };
     if (p.action === 'calendars') {
       return { calendars: [{ name: 'bahr.goren@gmail.com', primary: true }, { name: 'לימודים' }, { name: 'אישי' }].map((c) => ({ id: c.name, color: '#4285F4', primary: false, ...c })),
         chosen: (this.db.settings.find((r) => r.key === 'blocks_calendar_name') || {}).value || '' };

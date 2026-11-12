@@ -1,4 +1,4 @@
-# Task tracker — data schema (schema_version 8)
+# Task tracker — data schema (schema_version 9)
 
 The tracker's data lives in ONE Google Sheet:
 
@@ -161,9 +161,10 @@ Key/value pairs: `sync_deadlines_to_calendar`, `sync_blocks_to_calendar`, `defau
 `blocks_calendar_name` (calendar for the work blocks of courses without a calendar of their own, default `לימודים`),
 `other_blocks_calendar_name` (the same for every other category and for tasks without a category, default `Bahr Goren`;
 in both, empty = the app's calendar `משימות – בלוקי עבודה`), `blocks_calendar_id` (old: the one calendar of all
-block events before schema 8; only a fallback for blocks without `calendar_id`), `calendar_last_sync`, `calendar_status` (`ok · time` / `error · time · what`), `moodle_last_check`,
+block events before schema 8; only a fallback for blocks without `calendar_id`), `calendar_last_sync`, `calendar_status` (`ok · time` / `error · time · what`),
+`calendar_watch` (calendars watched for changes made in Google Calendar: `ok · N calendars · time` / `error · time · what`), `moodle_last_check`,
 `moodle_status` (all app-managed), `ai_model` (empty = automatic: newest Flash-Lite, then newest Flash; or a model id to try first),
-`ai_status` (`ok · …` / `waiting · why · until · at` / `error · what · at`), `ai_last_error` (Gemini's text), `schema_version` (8).
+`ai_status` (`ok · …` / `waiting · why · until · at` / `error · what · at`), `ai_last_error` (Gemini's text), `schema_version` (9).
 
 ## Google Calendar (optional, switched on in the app's settings)
 
@@ -171,13 +172,23 @@ block events before schema 8; only a fallback for blocks without `calendar_id`),
   (⏰ open / ✓ done; cancelled or deleted tasks are removed). One-way: Sheet → Calendar.
 - `sync_blocks_to_calendar=TRUE` → planned and done work blocks are events in Bahr's own calendars, each in its
   category's calendar: `courses.calendar` if set, else `blocks_calendar_name` for courses (**לימודים**) and
-  `other_blocks_calendar_name` for every other category and for tasks without a category (**Bahr Goren**). Two-way:
-  moving an event there changes the block's times; deleting it deletes the block. Drafts never go to the calendar.
-- Each block remembers the calendar that holds its event (`blocks.calendar_id`). When the calendar it belongs in
-  changes (the category's calendar, a default, the task's category, a meta category's kind), the event is deleted
-  there and created in the new calendar: right away when the change is made in the app, within ~10 minutes when the
-  Sheet is edited by hand. A calendar name that doesn't exist leaves those blocks where they are and shows an error in
-  the app (`calendar_status`).
+  `other_blocks_calendar_name` for every other category and for tasks without a category (**Bahr Goren**). Drafts
+  never go to the calendar.
+- **Two-way.** What Bahr changes in Google Calendar comes back to the block: moving or resizing the event changes the
+  block's times; editing its description changes the block's `note` (the text before the app's footer, as one line);
+  moving it to another calendar is followed (`calendar_id`) and the event stays there; deleting it deletes the block.
+  The event's title comes from the task (rename the task in the app). Turning an event into an all-day one is ignored.
+  A block is deleted only when its event is really gone — never because Google didn't answer.
+- **How fast.** Every calendar that holds blocks has a calendar trigger (`onCalendarChange`, kept by
+  `watchCalendars_`; result in `calendar_watch`), so a change there reaches the Sheet within about a minute. The app
+  also asks for a pull when it opens or comes back to the screen (`bootstrap` with `pull: 1`, at most once a minute),
+  then refreshes every 2 minutes while open. The 10-minute run pulls too, as a backstop.
+- Each block remembers the calendar that holds its event (`blocks.calendar_id`). The event stays there until the
+  calendar the block belongs in changes in the app — the category's calendar, a default, the task's category, a meta
+  category's kind: then it is deleted there and created in the new calendar. (Editing those by hand in the Sheet
+  doesn't move existing events; do it in the app.) A block without `calendar_id` was placed by an older version and is
+  put where it belongs at the next run. A calendar name that doesn't exist leaves the blocks where they are and keeps
+  an error in the app (`calendar_status`) until it's fixed.
 - The planner also shows Bahr's other calendars as grey "busy" time (read-only).
 
 ## How programs access the data
@@ -187,12 +198,14 @@ block events before schema 8; only a fallback for blocks without `calendar_id`),
   and keeps all data. Schema 7 added the `groups` tab and `courses.group/sort/archived_at`, and put the existing
   courses into the meta category `winter-2026-2027`. Schema 8 added `courses.calendar`, `blocks.calendar_id` and the
   setting `other_blocks_calendar_name` (`Bahr Goren`; his main calendar's name if no calendar is called that).
+  Schema 9 added the setting `calendar_watch` (no column changes).
 - **The app** (https://bahrgoren-ship-it.github.io/task-tracker/) talks to an Apps Script web app bound to the
   Sheet (code: `apps-script/Code.gs` in the GitHub repo `bahrgoren-ship-it/task-tracker`). API: POST JSON
-  `{key, action}` with `action` = `ping` · `bootstrap` (returns all tabs) · `batch` (`ops: [{op:'upsert', table, row} |
+  `{key, action}` with `action` = `ping` · `bootstrap` (returns all tabs; `pull: 1` = first bring in changes made in Google Calendar) · `batch` (`ops: [{op:'upsert', table, row} |
   {op:'delete', table, id}]`; writable: tasks, sessions, blocks, courses, groups, moodle_inbox, settings, suggestions) · `busy` (`from`, `to` dates → events of Bahr's calendars) · `syncNow` · `moodleCheck` ·
   `setMoodleToken` (`token`) · `setGeminiKey` (`key_value`) · `aiReview` (optional `id` = review that message again). The key is secret (Script Properties) — never write it into files.
-  A trigger runs `scheduledSync()` every 10 minutes (calendar two-way sync + Moodle check + AI review of new messages).
+  A trigger runs `scheduledSync()` every 10 minutes (calendar two-way sync + Moodle check + AI review of new messages),
+  and one calendar trigger per calendar that holds work blocks runs `onCalendarChange()` when an event there changes.
 - **An AI with Google Drive / Sheets access** (Gemini, Claude with the Drive connector) can read the Sheet directly.
   To change data, edit cells following the rules above, or ask Bahr to make the change in the app.
 

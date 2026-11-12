@@ -92,14 +92,18 @@ class Store {
 
   /* ---------- sync ---------- */
 
-  async refresh() {
+  // pull = ask the backend to bring in changes made in Google Calendar first (work blocks moved, resized, deleted…).
+  // Asked when the app opens or comes back to the screen, at most once a minute (backend v9; older ones ignore it).
+  async refresh({ pull = false } = {}) {
     if (!this.configured) return;
     if (this._refreshing) return this._refreshing;
+    if (pull && Date.now() - (this._pulledAt || 0) < 60000) pull = false;
+    if (pull) this._pulledAt = Date.now();
     this._refreshing = (async () => {
       this.status = 'syncing'; this.emit();
       try {
         await this.flush(true);
-        const fresh = await this.call({ action: 'bootstrap' });
+        const fresh = await this.call(pull ? { action: 'bootstrap', pull: 1 } : { action: 'bootstrap' });
         this.apiVersion = Number(fresh.api_version) || 1; lsSet('ht.apiVersion', this.apiVersion);
         const data = {};
         for (const t of Object.keys(EMPTY)) data[t] = fresh[t] || [];

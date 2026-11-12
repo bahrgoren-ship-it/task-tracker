@@ -4,7 +4,8 @@
  * What it does: a small JSON API over the Sheet, used by the app (docs/ folder of this repo).
  * Every request must carry the secret key stored in Script Properties (API_KEY).
  * Also: Google Calendar sync (confirmed work blocks, two-way, each into its category's calendar: courses → 'לימודים',
- * other categories → 'Bahr Goren' unless a category picks its own; optional deadlines),
+ * other categories → 'Bahr Goren' unless a category picks its own; changes made in Google Calendar come back within
+ * about a minute through calendar triggers; optional deadlines),
  * a Moodle check (announcements + assignments → moodle_inbox), run every 10 minutes by a trigger that setup()
  * installs, and an AI review (Gemini, built for the free tier) of new Moodle messages that suggests tasks only
  * when no existing task already covers them.
@@ -22,10 +23,11 @@
 
 const SHEET_ID = '10qLYln2zUiMo7dEI3xZ8pj4ncGX7TRmATZNuZfvUfWM';
 const TZ = 'Asia/Jerusalem';
-const API_VERSION = 8; // 5: calendars action, chosen blocks calendar, batch returns fresh rows · 6: suggestions tab
+const API_VERSION = 9; // 5: calendars action, chosen blocks calendar, batch returns fresh rows · 6: suggestions tab
 // · 7: categories and meta categories (tabs courses + groups) written by the app, archive
 // · 8: a Google Calendar per category (courses.calendar; defaults: courses / everything else), blocks.calendar_id
-const SCHEMA_VERSION = 8; // bump when SCHEMA / settings change; the Sheet is migrated automatically
+// · 9: changes made in Google Calendar come back within about a minute (calendar triggers; bootstrap {pull: 1})
+const SCHEMA_VERSION = 9; // bump when SCHEMA / settings change; the Sheet is migrated automatically
 
 // Column order of each tab. Must match row 1 of the Sheet (see SCHEMA.md).
 const SCHEMA = {
@@ -57,7 +59,7 @@ const DROPPED = { tasks: ['grade'] };
 // Default settings rows: [key, value, meaning]. Missing keys are added by migrate_.
 const DEFAULT_SETTINGS = [
   ['sync_deadlines_to_calendar', 'FALSE', "TRUE = every task deadline appears in the Google Calendar 'משימות – הגשות'."],
-  ['sync_blocks_to_calendar', 'TRUE', "TRUE = confirmed work blocks (after 'אשר תכנון') appear in Google Calendar, each in its category's calendar: courses.calendar, else blocks_calendar_name (courses) / other_blocks_calendar_name (everything else). Two-way: moving/deleting the event there changes the block."],
+  ['sync_blocks_to_calendar', 'TRUE', "TRUE = confirmed work blocks (after 'אשר תכנון') appear in Google Calendar, each in its category's calendar: courses.calendar, else blocks_calendar_name (courses) / other_blocks_calendar_name (everything else). Two-way, within about a minute: moving, resizing or deleting the event there, editing its description (= the block's note) or moving it to another calendar changes the block."],
   ['blocks_calendar_name', 'לימודים', "Google Calendar for the work blocks of courses (categories in a semester) that have no calendar of their own (courses.calendar). Empty = a separate calendar 'משימות – בלוקי עבודה'."],
   ['other_blocks_calendar_name', 'Bahr Goren', "Google Calendar for the work blocks of every other category, and of tasks without a category, when the category has no calendar of its own (courses.calendar). Empty = a separate calendar 'משימות – בלוקי עבודה'."],
   ['default_block_minutes', '60', 'Length of a new work block dropped on the planner.'],
@@ -74,6 +76,7 @@ const DEFAULT_SETTINGS = [
   ['blocks_calendar_id', '', 'Old (before schema 8): the one calendar that held all work-block events. Each block now keeps its own (blocks.calendar_id); this is only a fallback for blocks without it.'],
   ['calendar_last_sync', '', 'App-managed: last full calendar sync (rows changed after it are pushed next time).'],
   ['calendar_status', '', "App-managed: result of the last calendar sync ('ok · time' or 'error · time · what')."],
+  ['calendar_watch', '', "App-managed: calendars watched for changes made in Google Calendar ('ok · N calendars · time' or 'error · time · what')."],
   ['moodle_last_check', '', 'App-managed: last time Moodle was checked.'],
   ['moodle_status', '', "App-managed: result of the last Moodle check ('ok …' or the error)."],
   ['ai_model', '', "Gemini model to try first for the AI review. Empty = automatic: the newest Flash-Lite (biggest free quota), then the newest Flash."],
@@ -110,6 +113,7 @@ function setup() {
     if (t.getHandlerFunction() === 'scheduledSync') ScriptApp.deleteTrigger(t);
   });
   ScriptApp.newTrigger('scheduledSync').timeBased().everyMinutes(10).create();
+  try { withLock_(watchCalendars_); } catch (err) { Logger.log('calendar watch: ' + err.message); } // instant pull-back
   Logger.log('Your app key (paste it in the app settings): ' + key);
   return key;
 }
@@ -142,6 +146,7 @@ function handle_(req) {
         return json_({ ok: true, data: { api_version: API_VERSION, now: now_() } });
       case 'bootstrap':
         if (suggestionsWithoutId_()) withLock_(fillSuggestionIds_);
+        if (req.pull) pullNow_(); // the app opened / came back: bring in changes made in Google Calendar first
         return json_({ ok: true, data: bootstrap_() });
       case 'batch':
         return json_({ ok: true, data: withLock_(function () { return batch_(req.ops || []); }) });
@@ -150,7 +155,7 @@ function handle_(req) {
       case 'calendars': // Bahr's own calendars, to choose where work blocks go
         return json_({ ok: true, data: calendars_() });
       case 'syncNow':
-        return json_({ ok: true, data: withLock_(function () { return { calendar: syncCalendars_(true) }; }) });
+        return json_({ ok: true, data: withLock_(function () { return { calendar: syncCalendars_(true, false) }; }) });
       case 'setMoodleToken':
         return json_({ ok: true, data: setMoodleToken_(String(req.token || '').trim()) });
       case 'moodleCheck':
@@ -222,7 +227,8 @@ function bootstrap_() {
 function batch_(ops) {
   const results = [];
   const touched = {}; // task ids whose total time must be recomputed
-  const cal = { tasks: {}, blocks: {}, dead: [], full: false }; // what the calendar sync must look at
+  // what the calendar sync must look at. relocate = blocks whose calendar may have changed (moved there if so)
+  const cal = { tasks: {}, blocks: {}, relocate: {}, dead: [], full: false };
   // tasks / categories whose work blocks may now belong in another calendar (their blocks are synced again)
   const moved = { tasks: {}, cats: {} };
   const has = function (o, k) { return Object.prototype.hasOwnProperty.call(o, k); };
@@ -270,13 +276,14 @@ function batch_(ops) {
     const catOf = {};
     readTable_('tasks').forEach(function (t) { catOf[t.id] = t.course; });
     readTable_('blocks').forEach(function (b) {
-      if (moved.tasks[b.task_id] || moved.cats[catOf[b.task_id]]) cal.blocks[b.id] = true;
+      if (moved.tasks[b.task_id] || moved.cats[catOf[b.task_id]]) cal.blocks[b.id] = cal.relocate[b.id] = true;
     });
   }
   try { // calendar problems must never block saving the data
-    if (cal.full) syncCalendars_(true);
+    if (cal.full) syncCalendars_(true, true); // a calendar setting changed: every block to where it belongs now
     else syncSome_(cal);
   } catch (err) { setSetting_('calendar_status', 'error · ' + now_() + ' · ' + err.message); }
+  if (cal.full || Object.keys(moved.cats).length) watchCalendars_(); // a calendar may have joined / left (never throws)
   // send back the rows as they are now (the calendar sync fills calendar_event_id), so the app shows it at once
   [['tasks', cal.tasks], ['blocks', cal.blocks]].forEach(function (p) {
     if (!Object.keys(p[1]).length) return;
@@ -444,7 +451,6 @@ function migrate_() {
   if (existing.indexOf('blocks_calendar_name') < 0) setSetting_('sync_blocks_to_calendar', 'TRUE');
   // schema 8: Bahr asked for the blocks of every category that isn't a course to go to his calendar 'Bahr Goren'
   if (existing.indexOf('other_blocks_calendar_name') < 0) setSetting_('other_blocks_calendar_name', otherCalendarDefault_());
-  const placed = rememberBlockCalendars_(); // schema 8: each block remembers the calendar that holds its event
   const grouped = groupCourses_(); // schema 7: the existing courses go into their semester
   paintCourseColors_(sheet_('courses'));
   upsert_('settings', { key: 'schema_version', value: String(SCHEMA_VERSION) });
@@ -452,7 +458,6 @@ function migrate_() {
   writeAiHelp_();
   const fixed = cleanup_();
   fixed.grouped = grouped;
-  fixed.placed = placed;
   return 'migrated to schema ' + SCHEMA_VERSION + ' · ' + JSON.stringify(fixed);
 }
 
@@ -725,9 +730,13 @@ function setSetting_(key, value) { upsert_('settings', { key: key, value: String
 // - otherwise the default for its kind: a course (a category in a semester meta category) → settings.blocks_calendar_name
 //   ('לימודים'); every other category, and a task without a category → settings.other_blocks_calendar_name ('Bahr Goren').
 //   An empty default = a separate calendar the app creates, 'משימות – בלוקי עבודה'.
-// Each block remembers the calendar that holds its event (blocks.calendar_id). When the calendar a block belongs in
-// changes (the category's calendar, a default, the task's category), the event is deleted there and created again in
-// the new calendar. Two-way: moving or deleting the event in Google Calendar changes / removes the block.
+// Each block remembers the calendar that holds its event (blocks.calendar_id). An event stays in that calendar until the
+// calendar the block belongs in changes (the category's calendar, a default, the task's category): then it is deleted
+// there and created again in the new one. An event Bahr moves to another calendar himself stays there.
+// Two-way: what Bahr changes in Google Calendar comes back to the block — times (moved / resized), the description (=
+// the block's note), the calendar, and deleting the event deletes the block. The event's title comes from the task.
+// It comes back within about a minute: every calendar that holds blocks has a calendar trigger (watchCalendars_ →
+// onCalendarChange), the app asks for a pull when it opens (bootstrap {pull: 1}), and the 10-minute run pulls too.
 // Task deadlines can go (one-way) to the app's calendar 'משימות – הגשות'.
 
 const CAL = {
@@ -736,6 +745,9 @@ const CAL = {
     other: 'other_blocks_calendar_name', legacy: 'blocks_calendar_id' },
 };
 const APP_URL = 'https://bahrgoren-ship-it.github.io/task-tracker/';
+const BLOCK_MARK = 'בלוק עבודה ממעקב המשימות'; // start of the app's footer in an event's description
+const WATCH_FN = 'onCalendarChange'; // the calendar triggers' function
+const PULL_DAYS = { back: 45, ahead: 180 }; // blocks pulled from Google Calendar: starting in this window
 
 function calendarById_(id) {
   if (!id) return null;
@@ -755,13 +767,14 @@ function calendar_(kind, create) {
 
 /**
  * A calendar by name (Bahr's own first; names are not case-sensitive) or by id. '' or the app's own name → the app's
- * calendar 'משימות – בלוקי עבודה' (created when missing). Throws 'calendar not found: <name>' if there is none.
+ * calendar 'משימות – בלוקי עבודה' (created when missing, unless noCreate). Throws 'calendar not found: <name>'.
  */
-function findCalendar_(name) {
+function findCalendar_(name, noCreate) {
   name = String(name || '').trim();
   if (!name || name === CAL.blocks.name) {
-    return CalendarApp.getOwnedCalendarsByName(CAL.blocks.name)[0] ||
-      CalendarApp.createCalendar(CAL.blocks.name, { color: CalendarApp.Color.BLUE, timeZone: TZ });
+    const own = CalendarApp.getOwnedCalendarsByName(CAL.blocks.name)[0];
+    if (own || noCreate) { if (!own) throw new Error('calendar not found: ' + CAL.blocks.name); return own; }
+    return CalendarApp.createCalendar(CAL.blocks.name, { color: CalendarApp.Color.BLUE, timeZone: TZ });
   }
   const cal = CalendarApp.getOwnedCalendarsByName(name)[0] || CalendarApp.getCalendarsByName(name)[0] ||
     (name.indexOf('@') > 0 ? calendarById_(name) : null);
@@ -786,19 +799,32 @@ function blockCals_(tasks, courses, groups) {
   const defaults = { courses: getSetting_(CAL.blocks.courses), other: getSetting_(CAL.blocks.other) };
   const legacy = getSetting_(CAL.blocks.legacy); // blocks saved before schema 8 were all in this one
   const byName = {}, byId = {}, problems = [];
+  /** A calendar by name, looked up once per run; null when it doesn't exist (and the problem is noted). */
+  const resolve = function (name) {
+    if (!Object.prototype.hasOwnProperty.call(byName, name)) {
+      try { byName[name] = findCalendar_(name); } catch (err) {
+        byName[name] = null;
+        if (problems.indexOf(err.message) < 0) problems.push(err.message);
+      }
+    }
+    return byName[name];
+  };
   const ctx = {
     problems: problems,
+    run: { all: null }, // for locateEvent_: Bahr's calendars, read once
     /** The Calendar the block belongs in, or null (a problem was noted). */
     target: function (b) {
       const t = tasks[b.task_id];
-      const name = calendarNameFor_(t && courses[t.course], groups, defaults);
-      if (!Object.prototype.hasOwnProperty.call(byName, name)) {
-        try { byName[name] = findCalendar_(name); } catch (err) {
-          byName[name] = null;
-          if (problems.indexOf(err.message) < 0) problems.push(err.message);
-        }
-      }
-      return byName[name];
+      return resolve(calendarNameFor_(t && courses[t.course], groups, defaults));
+    },
+    /** Notes a problem for every chosen calendar that doesn't exist (the defaults, and each active category's own). */
+    checkNames: function () {
+      const names = [defaults.courses, defaults.other];
+      Object.keys(courses).forEach(function (slug) {
+        const c = courses[slug], g = groups[c.group];
+        if (c.calendar && c.active !== 'FALSE' && !(g && g.active === 'FALSE')) names.push(c.calendar);
+      });
+      names.forEach(function (n) { if (String(n || '').trim()) resolve(String(n).trim()); });
     },
     /** Id of the calendar holding the block's event now. */
     heldId: function (b) { return b.calendar_id || legacy; },
@@ -837,19 +863,6 @@ function otherCalendarDefault_() {
   } catch (err) { return want; }
 }
 
-/** Schema 8: blocks with an event but no calendar_id were saved when all events were in one calendar. Returns how many. */
-function rememberBlockCalendars_() {
-  const legacy = getSetting_(CAL.blocks.legacy);
-  if (!legacy) return 0;
-  let n = 0;
-  readTable_('blocks').forEach(function (b) {
-    if (!b.calendar_event_id || b.calendar_id) return;
-    upsert_('blocks', { id: b.id, calendar_id: legacy }, { touch: false });
-    n++;
-  });
-  return n;
-}
-
 function toDate_(stamp) {
   return stamp.length > 10 ? Utilities.parseDate(stamp, TZ, 'yyyy-MM-dd HH:mm') : Utilities.parseDate(stamp, TZ, 'yyyy-MM-dd');
 }
@@ -866,6 +879,34 @@ function groupMap_() {
   return m;
 }
 function courseName_(courses, slug) { const c = courses[slug]; return c ? (c.short_he || c.name_he) : ''; }
+
+/* --- a block's note ↔ its event's description ---- */
+
+/** The description the app writes on a block's event: the note, then the app's footer. */
+function blockDesc_(note) {
+  return (note ? note + '\n\n' : '') + BLOCK_MARK + ': ' + APP_URL +
+    '\nהזזה, מחיקה או שינוי התיאור של האירוע כאן מעדכנים את האפליקציה.';
+}
+
+/**
+ * The block note held in an event's description: the text before the app's footer, as one line (lines joined with
+ * ' · ', the app's note field has one line). Google Calendar may have turned the description into HTML.
+ */
+function noteOf_(desc) {
+  let s = String(desc || '');
+  if (/<[a-z][\s\S]*?>/i.test(s)) {
+    s = s.replace(/<br\s*\/?>/gi, '\n').replace(/<\/(p|div|li|h\d)>/gi, '\n').replace(/<[^>]+>/g, '')
+      .replace(/&nbsp;/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'").replace(/&amp;/g, '&');
+  }
+  const i = s.indexOf(BLOCK_MARK);
+  if (i >= 0) s = s.slice(0, i);
+  return oneLine_(s);
+}
+/** A note as one line: lines trimmed, empty ones dropped, joined with ' · '. */
+function oneLine_(s) {
+  return String(s || '').split(/\r?\n/).map(function (l) { return l.trim(); }).filter(Boolean).join(' · ');
+}
 
 /** Creates / updates / removes the deadline event of one task. */
 function syncTaskEvent_(task, cal, enabled, courses) {
@@ -896,30 +937,44 @@ function blockWanted_(b, enabled, tasks) {
     b.start && b.end;
 }
 
-/** Creates / updates / moves / removes the calendar event of one work block. ctx = blockCals_(…). */
-function syncBlockEvent_(b, ctx, enabled, tasks, courses) {
-  const holder = b.calendar_event_id ? ctx.holder(b) : null;
-  let ev = holder ? safeEvent_(holder, b.calendar_event_id) : null;
+/**
+ * Creates / updates / moves / removes the calendar event of one work block. ctx = blockCals_(…).
+ * relocate = the calendar the block belongs in may have changed: put the event there. Otherwise an existing event
+ * stays in the calendar holding it (so an event Bahr moved to another calendar stays there). A block without
+ * calendar_id was placed by an older version: it is put where it belongs.
+ */
+function syncBlockEvent_(b, ctx, enabled, tasks, courses, relocate) {
+  let holder = b.calendar_event_id ? ctx.holder(b) : null;
+  let ev = null;
+  if (holder) { // its event, also when Bahr moved it to another calendar and that wasn't pulled yet
+    const found = locateEvent_(holder, b.calendar_event_id, null, ctx.run);
+    if (found === undefined) return; // Google didn't answer: the next run tries again (never make a duplicate)
+    if (found) { ev = found.ev; holder = found.cal; }
+  }
   if (!blockWanted_(b, enabled, tasks)) {
     if (ev) ev.deleteEvent();
     if (b.calendar_event_id || b.calendar_id) upsert_('blocks', { id: b.id, calendar_event_id: '', calendar_id: '' }, { touch: false });
     return;
   }
-  const cal = ctx.target(b);
-  if (!cal) return; // its calendar doesn't exist: leave the block (and any event it has) as it is; the problem is reported
-  if (ev && holder.getId() !== cal.getId()) { ev.deleteEvent(); ev = null; } // it belongs in another calendar now
+  let cal = ev ? holder : null;
+  if (!ev || relocate || !b.calendar_id) {
+    const target = ctx.target(b);
+    if (!target) return; // its calendar doesn't exist: leave the block (and any event it has) as it is; the problem is reported
+    if (ev && holder.getId() !== target.getId()) { ev.deleteEvent(); ev = null; } // it belongs in another calendar now
+    cal = target;
+  }
   const t = tasks[b.task_id];
   const course = courseName_(courses, t.course);
   const title = (b.state === 'done' ? '✓ ' : '📚 ') + t.title + (course ? ' · ' + course : '');
-  const desc = (b.note ? b.note + '\n\n' : '') + 'בלוק עבודה ממעקב המשימות: ' + APP_URL +
-    '\nהזזה או מחיקה של האירוע כאן מעדכנת את האפליקציה.';
   const s = toDate_(b.start), e = toDate_(b.end);
   if (ev) {
     if (ev.getTitle() !== title) ev.setTitle(title);
     if (ev.getStartTime().getTime() !== s.getTime() || ev.getEndTime().getTime() !== e.getTime()) ev.setTime(s, e);
+    // the note changed in the app: write it into the description (a description Bahr wrote with the same text stays)
+    if (noteOf_(ev.getDescription()) !== oneLine_(b.note)) ev.setDescription(blockDesc_(b.note));
     if (b.calendar_id !== cal.getId()) upsert_('blocks', { id: b.id, calendar_id: cal.getId() }, { touch: false });
   } else {
-    const created = cal.createEvent(title, s, e, { description: desc });
+    const created = cal.createEvent(title, s, e, { description: blockDesc_(b.note) });
     upsert_('blocks', { id: b.id, calendar_event_id: created.getId(), calendar_id: cal.getId() }, { touch: false });
   }
 }
@@ -935,9 +990,15 @@ function syncSome_(c) {
   const courses = courseMap_();
   const ctx = blockCals_(tasks, courses, groupMap_());
   c.dead.forEach(function (d) {
-    const cal = d.table === 'tasks' ? calendar_('deadlines', false) : ctx.holder({ calendar_id: d.cal });
-    const ev = cal && safeEvent_(cal, d.id);
-    if (ev) ev.deleteEvent();
+    if (d.table === 'tasks') {
+      const dcal = calendar_('deadlines', false);
+      const dev = dcal && safeEvent_(dcal, d.id);
+      if (dev) dev.deleteEvent();
+      return;
+    }
+    const holder = ctx.holder({ calendar_id: d.cal });
+    const found = holder ? locateEvent_(holder, d.id, null, ctx.run) : null; // also if Bahr moved it to another calendar
+    if (found) found.ev.deleteEvent();
   });
   if (taskIds.length) {
     const cal = calendar_('deadlines', dlOn);
@@ -947,58 +1008,191 @@ function syncSome_(c) {
   }
   if (blockIds.length) {
     readTable_('blocks').forEach(function (b) {
-      if (c.blocks[b.id] && (blOn || b.calendar_event_id)) syncBlockEvent_(b, ctx, blOn, tasks, courses);
+      if (c.blocks[b.id] && (blOn || b.calendar_event_id)) {
+        syncBlockEvent_(b, ctx, blOn, tasks, courses, !!(c.relocate && c.relocate[b.id]));
+      }
     });
   }
   if (ctx.problems.length) setSetting_('calendar_status', 'error · ' + now_() + ' · ' + ctx.problems[0]);
   else if (dlOn || blOn) setSetting_('calendar_status', 'ok · ' + now_());
 }
 
+/* --- Google Calendar → Sheet ---- */
+
 /**
- * Full sync (every 10 minutes, and when a calendar setting changes).
- * 1. Calendar → Sheet: work-block events moved or deleted in Google Calendar update/delete the block.
- * 2. Sheet → Calendar: rows changed since the last run (or all rows when force) are pushed, and so is every block
- *    whose event sits in another calendar than the one it belongs in now (e.g. its category's calendar was changed
- *    in the Sheet by hand).
+ * The event in this calendar: the event, null if this calendar doesn't hold it (deleted, or moved to another
+ * calendar), undefined if Google didn't answer (decide nothing). getEventById() alone isn't trusted: it can still
+ * return an event that was deleted, so the event must also be listed by getEvents() at its own time.
+ * listed = this calendar's events in the pull window by id, when already read.
+ */
+function eventIn_(cal, id, listed) {
+  if (listed && listed[id]) return listed[id];
+  let ev;
+  try { ev = cal.getEventById(id); } catch (err) { return undefined; }
+  if (!ev) return null;
+  try {
+    const near = cal.getEvents(new Date(ev.getStartTime().getTime() - 60000), new Date(ev.getEndTime().getTime() + 60000));
+    return near.some(function (x) { return x.getId() === id; }) ? ev : null;
+  } catch (err) { return undefined; }
+}
+
+/**
+ * Where a block's event is now: {cal, ev}; null = it was deleted; undefined = unsure (Google didn't answer).
+ * Not in its own calendar any more → looked for in Bahr's other calendars (moved there in Google Calendar).
+ */
+function locateEvent_(holder, id, listed, run) {
+  const here = eventIn_(holder, id, listed);
+  if (here) return { cal: holder, ev: here };
+  if (here === undefined) return undefined;
+  let unsure = false;
+  if (!run.all) {
+    try { run.all = CalendarApp.getAllCalendars(); } catch (err) { return undefined; }
+  }
+  for (let i = 0; i < run.all.length; i++) {
+    const cal = run.all[i];
+    if (cal.getId() === holder.getId()) continue;
+    const ev = eventIn_(cal, id, null);
+    if (ev) return { cal: cal, ev: ev };
+    if (ev === undefined) unsure = true;
+  }
+  return unsure ? undefined : null;
+}
+
+/**
+ * Google Calendar → Sheet for work blocks. For each block with an event (starting in the pull window):
+ * moved / resized → new times; description edited → the block's note; moved to another calendar → calendar_id follows
+ * (the event stays there); deleted → the block is deleted. A block is never deleted when Google didn't answer.
+ * onlyCal = only the blocks held in that calendar (a calendar trigger); '' = all. Returns how many blocks changed.
+ */
+function pullBlocks_(onlyCal) {
+  if (getSetting_(CAL.blocks.toggle) !== 'TRUE') return 0;
+  const legacy = getSetting_(CAL.blocks.legacy);
+  const from = new Date(Date.now() - PULL_DAYS.back * 86400000), to = new Date(Date.now() + PULL_DAYS.ahead * 86400000);
+  const run = { cals: {}, lists: {}, all: null };
+  let changed = 0;
+  readTable_('blocks').forEach(function (b) {
+    if (!b.calendar_event_id || !b.start) return;
+    const hid = b.calendar_id || legacy;
+    if (!hid || (onlyCal && hid !== onlyCal)) return;
+    const s = toDate_(b.start);
+    if (s < from || s > to) return;
+    if (!Object.prototype.hasOwnProperty.call(run.cals, hid)) run.cals[hid] = calendarById_(hid);
+    const holder = run.cals[hid];
+    if (!holder) return; // that calendar is gone: the push makes a new event; never delete the block for it
+    if (!Object.prototype.hasOwnProperty.call(run.lists, hid)) {
+      try {
+        const m = {};
+        holder.getEvents(from, to).forEach(function (ev) { m[ev.getId()] = ev; });
+        run.lists[hid] = m;
+      } catch (err) { run.lists[hid] = undefined; }
+    }
+    if (run.lists[hid] === undefined) return; // Google didn't answer: next time
+    const found = locateEvent_(holder, b.calendar_event_id, run.lists[hid], run);
+    if (found === undefined) return; // unsure: next time
+    if (!found) { deleteRow_('blocks', b.id); changed++; return; } // deleted in Google Calendar
+    const ev = found.ev, patch = {};
+    if (found.cal.getId() !== hid) patch.calendar_id = found.cal.getId(); // moved to another calendar there
+    if (ev.getLastUpdated() > toDate_(b.updated_at || '2000-01-01')) { // changed there after the app last saved it
+      if (!ev.isAllDayEvent()) {
+        const es = fmt_(ev.getStartTime()), ee = fmt_(ev.getEndTime());
+        if (es !== b.start) patch.start = es;
+        if (ee !== b.end) patch.end = ee;
+      }
+      const note = noteOf_(ev.getDescription());
+      if (note !== oneLine_(b.note)) patch.note = note;
+    }
+    if (!Object.keys(patch).length) return;
+    const content = 'start' in patch || 'end' in patch || 'note' in patch;
+    patch.id = b.id;
+    upsert_('blocks', patch, { touch: content });
+    changed++;
+  });
+  return changed;
+}
+
+/**
+ * Calendar trigger (one per calendar that holds work blocks, kept by watchCalendars_): something changed in that
+ * calendar → bring Bahr's changes to blocks into the Sheet now, instead of at the next 10-minute run.
+ */
+function onCalendarChange(e) {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(20000)) return; // busy for long: the 10-minute run catches up
+  try {
+    if (pullBlocks_(e && e.calendarId ? String(e.calendarId) : '')) setSetting_('calendar_status', 'ok · ' + now_());
+  } catch (err) {
+    setSetting_('calendar_status', 'error · ' + now_() + ' · ' + err.message);
+  } finally { lock.releaseLock(); }
+}
+
+/** The app opened or came back (bootstrap {pull: 1}): pull now, unless something else holds the lock. */
+function pullNow_() {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(5000)) return;
+  try { pullBlocks_(''); } catch (err) {
+    setSetting_('calendar_status', 'error · ' + now_() + ' · ' + err.message);
+  } finally { lock.releaseLock(); }
+}
+
+/**
+ * Keeps one calendar trigger (→ onCalendarChange) on every calendar that holds a work-block event or that new blocks
+ * go to, and removes the others, so a change made in Google Calendar reaches the Sheet within about a minute.
+ * No calendars while the work-block sync is off. Never throws: the result goes to settings.calendar_watch.
+ */
+function watchCalendars_() {
+  try {
+    const want = {};
+    if (getSetting_(CAL.blocks.toggle) === 'TRUE') {
+      const legacy = getSetting_(CAL.blocks.legacy);
+      readTable_('blocks').forEach(function (b) {
+        const id = b.calendar_event_id ? (b.calendar_id || legacy) : '';
+        if (id) want[id] = true;
+      });
+      const names = [getSetting_(CAL.blocks.courses), getSetting_(CAL.blocks.other)];
+      readTable_('courses').forEach(function (c) { if (c.calendar) names.push(c.calendar); });
+      names.forEach(function (n) {
+        try { want[findCalendar_(n, true).getId()] = true; } catch (err) { /* not there (yet): the sync reports it */ }
+      });
+    }
+    const have = {};
+    ScriptApp.getProjectTriggers().forEach(function (t) {
+      if (t.getHandlerFunction() !== WATCH_FN) return;
+      const id = t.getTriggerSourceId();
+      if (!want[id] || have[id]) ScriptApp.deleteTrigger(t); else have[id] = true;
+    });
+    Object.keys(want).forEach(function (id) {
+      if (!have[id]) ScriptApp.newTrigger(WATCH_FN).forUserCalendar(id).onEventUpdated().create();
+    });
+    const n = Object.keys(want).length;
+    setSetting_('calendar_watch', 'ok · ' + n + ' calendars · ' + now_());
+    return n;
+  } catch (err) {
+    try { setSetting_('calendar_watch', 'error · ' + now_() + ' · ' + err.message); } catch (e2) { /* nothing to do */ }
+    return -1;
+  }
+}
+
+/**
+ * Full sync (every 10 minutes, `syncNow`, and when a calendar setting changes).
+ * 1. Calendar → Sheet: pullBlocks_ (all calendars).
+ * 2. Sheet → Calendar: rows changed since the last run are pushed (all rows when force). relocate = a calendar
+ *    setting changed: every block is also put in the calendar it belongs in now (otherwise events stay where they are).
  * A category whose calendar doesn't exist doesn't stop the other categories or the deadlines.
  */
-function syncCalendars_(force) {
+function syncCalendars_(force, relocate) {
   const dlOn = getSetting_(CAL.deadlines.toggle) === 'TRUE';
   const blOn = getSetting_(CAL.blocks.toggle) === 'TRUE';
   const last = force ? '' : (getSetting_('calendar_last_sync') || '').slice(0, 16);
   const startedAt = now_();
+
+  // 1. pull changes made in Google Calendar to work blocks
+  const pulled = pullBlocks_('');
+
+  // 2. push changes from the Sheet
   const courses = courseMap_();
   const tasks = {};
   readTable_('tasks').forEach(function (t) { tasks[t.id] = t; });
   const ctx = blockCals_(tasks, courses, groupMap_());
-  let pulled = 0, pushed = 0;
-
-  // 1. pull changes made in Google Calendar to work blocks (each block from the calendar that holds its event)
-  if (blOn) {
-    const from = new Date(Date.now() - 45 * 86400000), to = new Date(Date.now() + 180 * 86400000);
-    const events = {}; // calendar id → {event id → event}
-    readTable_('blocks').forEach(function (b) {
-      if (!b.calendar_event_id || !b.start) return;
-      const s = toDate_(b.start);
-      if (s < from || s > to) return;
-      const holder = ctx.holder(b);
-      if (!holder) return; // that calendar is gone: the push below makes a new event; never delete the block for it
-      const hid = holder.getId();
-      if (!events[hid]) {
-        events[hid] = {};
-        holder.getEvents(from, to).forEach(function (ev) { events[hid][ev.getId()] = ev; });
-      }
-      // not in the window → ask for it directly (it may have been moved far away) before deciding it was deleted
-      const ev = events[hid][b.calendar_event_id] || safeEvent_(holder, b.calendar_event_id);
-      if (!ev) { deleteRow_('blocks', b.id); pulled++; return; } // deleted in Google Calendar
-      const es = fmt_(ev.getStartTime()), ee = fmt_(ev.getEndTime());
-      if ((es !== b.start || ee !== b.end) && ev.getLastUpdated() > toDate_(b.updated_at || '2000-01-01')) {
-        upsert_('blocks', { id: b.id, start: es, end: ee }); pulled++;
-      }
-    });
-  }
-
-  // 2. push changes from the Sheet
+  let pushed = 0;
   const dcal = calendar_('deadlines', dlOn);
   Object.keys(tasks).forEach(function (id) {
     const t = tasks[id];
@@ -1007,13 +1201,12 @@ function syncCalendars_(force) {
       if (dcal || t.calendar_event_id) { syncTaskEvent_(t, dcal, dlOn, courses); pushed++; }
     }
   });
+  if (blOn) ctx.checkNames(); // a wrong calendar name stays reported until it's fixed, not only when a block is saved
   readTable_('blocks').forEach(function (b) {
     const want = blockWanted_(b, blOn, tasks);
-    const target = want ? ctx.target(b) : null;
-    const held = ctx.heldId(b);
-    const misplaced = want && b.calendar_event_id && held && target && target.getId() !== held;
-    if (force || misplaced || (b.updated_at || '') >= last || (want && !b.calendar_event_id) || (!want && b.calendar_event_id)) {
-      if (want || b.calendar_event_id) { syncBlockEvent_(b, ctx, blOn, tasks, courses); pushed++; }
+    const unplaced = want && b.calendar_event_id && !b.calendar_id; // placed by an older version
+    if (force || unplaced || (b.updated_at || '') >= last || (want && !b.calendar_event_id) || (!want && b.calendar_event_id)) {
+      if (want || b.calendar_event_id) { syncBlockEvent_(b, ctx, blOn, tasks, courses, !!relocate); pushed++; }
     }
   });
   const problem = ctx.problems[0] || '';
@@ -2011,6 +2204,7 @@ function scheduledSync() {
       if (getSetting_(CAL.deadlines.toggle) === 'TRUE' || getSetting_(CAL.blocks.toggle) === 'TRUE' ||
         getSetting_('deadline_calendar_id') || getSetting_('blocks_calendar_id')) syncCalendars_(false);
     } catch (err) { setSetting_('calendar_status', 'error · ' + now_() + ' · ' + err.message); }
+    watchCalendars_(); // calendar triggers for instant pull-back (never throws; result in settings.calendar_watch)
     try {
       const every = Number(getSetting_('moodle_check_minutes')) || 15;
       const last = getSetting_('moodle_last_check');

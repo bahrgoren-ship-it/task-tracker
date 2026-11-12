@@ -47,7 +47,7 @@ function boot() {
   $('#syncPill').addEventListener('click', () => {
     if (!store.configured) return openSettings();
     if (store.status === 'error') toast(friendlyError(store.error));
-    store.refresh();
+    store.refresh({ pull: true });
   });
   // buttons inside notices (any screen): "להגדרות", and ✕ = hide this notice until the problem changes
   document.addEventListener('click', (e) => {
@@ -79,12 +79,13 @@ function boot() {
     ? `נשמרו ${e.detail.minutes} דק׳ ל„${store.task(e.detail.task_id)?.title || ''}”` : 'פחות מדקה — לא נשמר זמן'));
   setInterval(onSecond, 1000);
 
-  window.addEventListener('online', () => store.refresh());
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) store.refresh(); });
+  // coming back (from Google Calendar, say): the backend first pulls changes made there — see store.refresh
+  window.addEventListener('online', () => store.refresh({ pull: true }));
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) store.refresh({ pull: true }); });
   setInterval(() => { if (!document.hidden) store.refresh(); }, 120000);
 
   render();
-  if (store.configured) store.refresh(); else openSettings();
+  if (store.configured) store.refresh({ pull: true }); else openSettings();
 
   if ('serviceWorker' in navigator) {
     const hadController = !!navigator.serviceWorker.controller;
