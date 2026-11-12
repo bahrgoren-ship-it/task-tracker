@@ -1,12 +1,13 @@
 // Planner: a week grid (RTL) where tasks are dragged in as "work blocks" (בלוקי עבודה).
 //
-// - Drag a task from the tray onto the grid → a 1-hour draft block (length = settings.default_block_minutes).
+// - Drag a task from the tray onto the grid → a 1-hour work block (length = settings.default_block_minutes).
 //   On touch screens: press-and-hold, then drag. Or tap a task, then tap a time slot.
 // - Drag a block to move it, drag its bottom edge to resize it, tap it to edit.
 // - Take a block back off: drag it back onto the task list, use its ✕, or "הסר מהלוח" in its sheet.
 //   Every placement / move / resize / removal can be undone from the toast ("בטל").
-// - Drafts are "thinking" — "אשר תכנון" turns the visible drafts into planned blocks (which the backend can
-//   sync to Google Calendar). The user's own calendar events are shown in grey as busy time.
+// - A block is in Google Calendar as soon as it is placed (no drafts / "אשר תכנון" since backend v9; the backend
+//   turns an old 'draft' into 'planned'), and changes made there come back. Only a block whose "להציג ביומן
+//   Google" is unchecked stays out. The user's own calendar events are shown in grey as busy time.
 import { store } from './store.js';
 import { todayIL, addDays, dayDiff, weekday, shortDate, nowIL, fmtMinutes, dueLabel } from './dates.js';
 import { calendarState, calendarText, noticeHtml } from './notices.js';
@@ -69,9 +70,8 @@ export function summary() {
   const days = visibleDays();
   const blocks = store.data.blocks.filter((b) => b.state !== 'skipped' && days.includes(b.start.slice(0, 10)));
   const min = blocks.reduce((s, b) => s + Math.max(0, minutes(b.start, b.end)), 0);
-  const drafts = blocks.filter((b) => b.state === 'draft').length;
   if (!blocks.length) return 'אין בלוקי עבודה בימים האלה';
-  return `${fmtMinutes(min)} ש׳ מתוכננות${drafts ? `, ${drafts === 1 ? 'טיוטה אחת' : `${drafts} טיוטות`}` : ''}`;
+  return `${fmtMinutes(min)} ש׳ מתוכננות`;
 }
 
 /* ------------------------------------------------------------------ render ---- */
@@ -87,7 +87,6 @@ export function render(force = false) {
   lastSig = sig;
   const keepScroll = $('.pl-scroll')?.scrollTop;
 
-  const drafts = store.data.blocks.filter((b) => b.state === 'draft' && days.includes(b.start.slice(0, 10)));
   const first = days[0], last = days[days.length - 1];
   const range = first.slice(5, 7) === last.slice(5, 7)
     ? `${+first.slice(8)}–${+last.slice(8)} ב${MONTHS[+first.slice(5, 7) - 1]}`
@@ -101,7 +100,6 @@ export function render(force = false) {
         <button class="icon-btn" data-nav="next" aria-label="הבא"><svg viewBox="0 0 24 24"><path d="m15 6-6 6 6 6"/></svg></button>
         <span class="pl-range">${esc(range)}</span>
       </div>
-      <button class="btn primary sm" data-confirm ${drafts.length ? '' : 'disabled'}>אשר תכנון${drafts.length ? ` (${drafts.length})` : ''}</button>
     </div>
     ${calendarNotice()}
     ${selectedTask ? `<div class="pl-banner">הקש על שעה בלוח כדי לשבץ את „${esc(store.task(selectedTask)?.title || '')}” <button class="btn ghost sm" data-cancelsel>ביטול</button></div>` : ''}
@@ -200,10 +198,10 @@ function blockHtml({ b, s, e, col, cols }) {
   const a = Math.max(s, START_H * 60), z = Math.min(e, END_H * 60);
   const h = Math.max(18, topOf(z) - topOf(a));
   const synced = !!b.calendar_event_id;
-  return `<div class="blk st-${esc(b.state)} ${h < 60 ? 'short' : ''}" data-block="${esc(b.id)}"
+  return `<div class="blk st-${esc(b.state === 'draft' ? 'planned' : b.state)} ${h < 60 ? 'short' : ''}" data-block="${esc(b.id)}"
       style="--c:${esc(c ? c.color : '#8A8F98')};top:${topOf(a)}px;height:${h}px;inset-inline-start:calc(${(100 / cols) * col}% + 1px);width:calc(${100 / cols}% - 3px)">
     <div class="blk-t" dir="auto">${b.state === 'done' ? '✓ ' : ''}${esc(t ? t.title : '(משימה נמחקה)')}</div>
-    ${h > 30 ? `<div class="blk-m"><bdi dir="ltr">${b.start.slice(11, 16)}–${b.end.slice(11, 16)}</bdi>${synced ? ' · 📅' : ''}${b.state === 'draft' ? ' · טיוטה' : ''}</div>` : ''}
+    ${h > 30 ? `<div class="blk-m"><bdi dir="ltr">${b.start.slice(11, 16)}–${b.end.slice(11, 16)}</bdi>${synced ? ' · 📅' : ''}</div>` : ''}
     <button type="button" class="blk-x" data-unplace aria-label="הסר מהלוח" title="הסר מהלוח">✕</button>
     <div class="blk-resize" data-resize></div>
   </div>`;
@@ -248,7 +246,6 @@ function onClick(e) {
     else view.start = addDays(view.start, n === 'next' ? view.days : -view.days);
     return render(true);
   }
-  if (e.target.closest('[data-confirm]')) return confirmPlan();
   if (e.target.closest('[data-cancelsel]')) { selectedTask = null; return render(true); }
   const ed = e.target.closest('[data-edit]');
   if (ed) return ui.openEditor(ed.dataset.edit);
@@ -277,8 +274,9 @@ function defaultLen() { return Math.max(15, Number(store.setting('default_block_
 function createBlock(taskId, day, startMin, len = defaultLen()) {
   const endMin = Math.min(END_H * 60, startMin + len);
   const end = endMin >= 24 * 60 ? `${addDays(day, 1)} 00:00` : `${day} ${toHHMM(endMin)}`;
-  const id = store.saveBlock({ task_id: taskId, start: `${day} ${toHHMM(startMin)}`, end, state: 'draft' });
-  ui.toast(`נוסף בלוק טיוטה · ${toHHMM(startMin)}`, { label: 'בטל', fn: () => store.deleteBlock(id) });
+  const id = store.saveBlock({ task_id: taskId, start: `${day} ${toHHMM(startMin)}`, end, state: 'planned' });
+  const cal = calendarWhere([{ task_id: taskId, sync_calendar: '' }]);
+  ui.toast(`נוסף בלוק · ${toHHMM(startMin)}${cal ? ` — נכנס ${cal}` : ''}`, { label: 'בטל', fn: () => store.deleteBlock(id) });
 }
 
 /** Takes a block off the planner (back to the task list), with undo. */
@@ -300,7 +298,7 @@ function moveBlock(id, start, end) {
   ui.toast(`הבלוק הוזז · ${start.slice(11, 16)}–${end.slice(11, 16)}`, { label: 'בטל', fn: () => store.saveBlock(before) });
 }
 
-// Where these confirmed blocks go, for the toast: 'ליומן „לימודים”' / 'ליומנים „לימודים” ו-„Bahr Goren”' ('' = nowhere).
+// Where these blocks go, for the toast: 'ליומן „לימודים”' / 'ליומנים „לימודים” ו-„Bahr Goren”' ('' = nowhere).
 // Each block goes to its category's calendar (categories.calendarOf).
 function calendarWhere(blocks) {
   if (store.setting('sync_blocks_to_calendar') !== 'TRUE') return '';
@@ -315,16 +313,6 @@ function calendarNotice() {
   const st = calendarState();
   if (st.kind !== 'error' || store.setting('sync_blocks_to_calendar') !== 'TRUE') return '';
   return noticeHtml({ tone: 'err', ...calendarText(st), tech: st.tech, dismiss: `cal:${st.tech}` });
-}
-
-function confirmPlan() {
-  const days = visibleDays();
-  const drafts = store.data.blocks.filter((b) => b.state === 'draft' && days.includes(b.start.slice(0, 10)));
-  drafts.forEach((b) => store.saveBlock({ id: b.id, state: 'planned' }));
-  const cal = calendarWhere(drafts);
-  const n = drafts.length === 1 ? 'בלוק אחד אושר' : `${drafts.length} בלוקים אושרו`;
-  ui.toast(cal ? `${n} ונכנס${drafts.length === 1 ? '' : 'ים'} ${cal}` : n,
-    { label: 'בטל', fn: () => drafts.forEach((b) => store.saveBlock({ id: b.id, state: 'draft' })) });
 }
 
 /* ------------------------------------------------------------ drag & drop ---- */
@@ -510,7 +498,7 @@ function openChooser(day, startMin) {
   dlg.showModal();
 }
 
-const STATES = { draft: 'טיוטה', planned: 'מתוכנן', done: 'בוצע', skipped: 'דילגתי' };
+const STATES = { planned: 'מתוכנן', done: 'בוצע', skipped: 'דילגתי' }; // 'draft' (old) shows as planned
 
 function openBlockSheet(id) {
   const b = store.block(id);
@@ -530,9 +518,9 @@ function openBlockSheet(id) {
         <label class="field"><span>עד</span><input type="time" name="to" step="900" value="${b.end.slice(11, 16)}"></label>
       </div>
       <fieldset class="field"><legend>מצב</legend><div class="segmented">
-        ${Object.entries(STATES).map(([k, v]) => `<label><input type="radio" name="state" value="${k}" ${b.state === k ? 'checked' : ''}><span>${v}</span></label>`).join('')}
+        ${Object.entries(STATES).map(([k, v]) => `<label><input type="radio" name="state" value="${k}" ${(b.state === 'draft' ? 'planned' : b.state) === k ? 'checked' : ''}><span>${v}</span></label>`).join('')}
       </div></fieldset>
-      ${syncOn ? `<label class="check"><input type="checkbox" name="sync" ${b.sync_calendar !== 'FALSE' ? 'checked' : ''}> להציג ביומן Google (בלוקים מאושרים)</label>` : ''}
+      ${syncOn ? `<label class="check"><input type="checkbox" name="sync" ${b.sync_calendar !== 'FALSE' ? 'checked' : ''}> להציג ביומן Google</label>` : ''}
       <label class="field"><span>מה לעשות בבלוק (לא חובה)</span><input name="note" value="${esc(b.note)}"></label>
     </div>
     <footer class="sheet-foot">

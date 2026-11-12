@@ -12,7 +12,7 @@ Bahr's task tracker (homework first; may grow to all tasks): a Hebrew (RTL) inst
 | `docs/js/store.js` | Local copy of the data + queue of unsent changes + calls to the backend. |
 | `docs/js/dates.js` | Date helpers (everything in Israel time, strings `yyyy-mm-dd` / `HH:MM`). |
 | `docs/js/timer.js` | Stopwatch / pomodoro. State lives in the Sheet (`settings.active_timer`) so devices share it; focus time is saved to `sessions`. |
-| `docs/js/planner.js` | Planner: custom RTL week grid, drag tasks from the tray into work blocks (`blocks`), move/resize, tap-to-place, "אשר תכנון", busy layer from Google Calendar. No external libraries. |
+| `docs/js/planner.js` | Planner: custom RTL week grid, drag tasks from the tray into work blocks (`blocks`), move/resize, tap-to-place, busy layer from Google Calendar. A placed block is in Google Calendar at once (no drafts / "אשר תכנון" since v9). No external libraries. |
 | `docs/js/notices.js` | Status strings (`ai_status`, `moodle_status`, `calendar_status`) → plain Hebrew + what to do; `noticeHtml` (original text under „פרטים”, dismissable). |
 | `docs/js/suggestions.js` | Card on the tasks screen: pending rows of the `suggestions` tab (any AI proposes, Bahr approves): tasks, blocks, sessions, categories, meta categories. Validates, shows before → after, applies through store, undo. |
 | `docs/js/inbox.js` | "הודעות" screen: full Moodle messages + the AI's suggestions (add task / update task / not needed). A message is never a task by itself. |

@@ -28,7 +28,7 @@ const LABEL = { title: 'שם', course: 'קורס', status: 'סטטוס', due_dat
   name_he: 'שם', short_he: 'שם קצר', group: 'קטגוריית־על', color: 'צבע', number: 'מספר קורס', moodle_course_id: 'קורס במודל',
   moodle_folder: 'תיקייה ב-Drive', calendar: 'יומן', active: 'מצב', name: 'שם', kind: 'סוג', slug: 'מזהה' };
 const STATUS_HE = { todo: 'לא התחיל', in_progress: 'בתהליך', done: 'הושלם', cancelled: 'בוטל' };
-const STATE_HE = { draft: 'טיוטה', planned: 'מתוכנן', done: 'בוצע', skipped: 'דילגתי' };
+const STATE_HE = { draft: 'מתוכנן', planned: 'מתוכנן', done: 'בוצע', skipped: 'דילגתי' }; // 'draft' = old value, saved as planned
 const WHAT = { tasks: 'משימה', blocks: 'בלוק עבודה', sessions: 'זמן עבודה', courses: 'קטגוריה', groups: 'קטגוריית־על' };
 const FEMININE = { tasks: true, courses: true, groups: true }; // "חדשה" / "חדש"
 const DATE = /^\d{4}-\d{2}-\d{2}$/, TIME = /^\d{2}:\d{2}$/, STAMP = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/;
@@ -182,7 +182,7 @@ function apply(p) {
   }
   if (p.table === 'blocks') {
     if (p.op === 'create') {
-      const id = store.saveBlock({ ...f, state: f.state || 'planned' });
+      const id = store.saveBlock({ ...f, state: f.state && f.state !== 'draft' ? f.state : 'planned' });
       return { result: id, undo: () => store.deleteBlock(id) };
     }
     if (p.op === 'update') {

@@ -549,7 +549,7 @@ function calendarSettingsHtml() {
   return `<label class="check"><input type="checkbox" data-set="sync_blocks_to_calendar" ${on ? 'checked' : ''}> בלוקי עבודה מאושרים נכנסים ליומן Google</label>
     ${perCat ? pick('blocks_calendar_name', 'יומן לקורסים') + pick('other_blocks_calendar_name', 'יומן לשאר הקטגוריות (ברירת מחדל לקטגוריה חדשה)')
       : pick('blocks_calendar_name', 'לאיזה יומן')}
-    <p class="hint small">אחרי „אשר תכנון” הבלוקים מופיעים ביומן. ${perCat ? 'כל קטגוריה יכולה לבחור יומן משלה: „קטגוריות” → עריכת הקטגוריה. '
+    <p class="hint small">כל בלוק בתכנון מופיע ביומן מיד (בלוק מסוים אפשר להשאיר בחוץ בעריכת הבלוק). ${perCat ? 'כל קטגוריה יכולה לבחור יומן משלה: „קטגוריות” → עריכת הקטגוריה. '
       : store.apiVersion >= 5 ? 'כדי לבחור יומן לכל קטגוריה צריך לעדכן את השרת (Apps Script) — ראה SETUP.md. ' : ''}הזזה או מחיקה של האירוע ביומן מעדכנת את האפליקציה.</p>
     <label class="check"><input type="checkbox" data-set="sync_deadlines_to_calendar" ${store.setting('sync_deadlines_to_calendar') === 'TRUE' ? 'checked' : ''}> תאריכי הגשה ביומן נפרד „משימות – הגשות”</label>
     ${st.kind === 'error' ? noticeHtml({ tone: 'err', ...calendarText(st), action: '', tech: st.tech })
