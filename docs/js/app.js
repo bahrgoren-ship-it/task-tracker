@@ -1,6 +1,6 @@
 // Main UI: tasks screen, task editor, timer, settings. Plain JS, no build step.
 import { store } from './store.js';
-import { bucketOf, dueLabel, todayIL, addDays, shortDate, weekday, fmtMinutes, fmtClock } from './dates.js';
+import { bucketOf, dueLabel, todayIL, addDays, dayDiff, shortDate, weekday, fmtMinutes, fmtClock, startsLater, startFrom, startOn } from './dates.js';
 import * as timer from './timer.js';
 import * as planner from './planner.js';
 import * as inbox from './inbox.js';
@@ -17,16 +17,20 @@ const STATUS = {
   done: { label: 'הושלם', next: 'todo' },
   cancelled: { label: 'בוטל', next: 'todo' },
 };
+// 'future' and 'done' are folded sections at the end of the list (future = a task Bahr can only start later)
 const SECTIONS = [
   ['overdue', 'באיחור'], ['today', 'היום'], ['tomorrow', 'מחר'], ['week', 'השבוע הקרוב'],
-  ['later', 'בהמשך'], ['nodate', 'ללא תאריך'], ['done', 'הושלמו ובוטלו'],
+  ['later', 'בהמשך'], ['nodate', 'ללא תאריך'], ['future', 'עתידיות'], ['done', 'הושלמו ובוטלו'],
 ];
+const FOLDED = { future: 'toggleFuture', done: 'toggleDone' }; // section → the action that opens / folds it
 const SCREENS = { tasks: 'משימות', planner: 'תכנון', inbox: 'הודעות' };
 const ICON = {
   play: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5v13l10-6.5-10-6.5Z"/></svg>',
   close: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>',
   clock: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2 2M9 2h6"/></svg>',
   link: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></svg>',
+  hourglass: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h10M7 21h10M8 3v3.5c0 1.6 4 3.8 4 5.5s-4 3.9-4 5.5V21M16 3v3.5c0 1.6-4 3.8-4 5.5s4 3.9 4 5.5V21"/></svg>',
+  chevron: '<svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>',
 };
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -134,10 +138,11 @@ function renderSummary() {
     const n = visibleTasks().length;
     text = `ארכיון: ${categories.archiveName(store.ui('course', 'all'))} · ${n === 1 ? 'משימה אחת' : `${n} משימות`}`;
   } else {
-    // (tasks of archived categories don't count)
+    // (tasks of archived categories don't count, and future tasks wait until their day)
     const open = store.data.tasks.filter((t) => t.status !== 'done' && t.status !== 'cancelled' && !store.taskArchived(t));
-    const overdue = open.filter((t) => bucketOf(t) === 'overdue').length;
-    text = open.length ? `${open.length} פתוחות${overdue ? `, ${overdue} באיחור` : ''}` : 'אין משימות פתוחות';
+    const now = open.filter((t) => !startsLater(t));
+    const overdue = now.filter((t) => bucketOf(t) === 'overdue').length;
+    text = now.length ? `${now.length} פתוחות${overdue ? `, ${overdue} באיחור` : ''}` : open.length ? 'אין משימות לעכשיו' : 'אין משימות פתוחות';
   }
   const el = $('#summary');
   if (el.textContent !== text) el.textContent = text;
@@ -156,7 +161,8 @@ function render() {
   if ($('#timerSheet').open) renderTimerSheet();
   categories.refresh();
   const sig = JSON.stringify([store.data.suggestions, store.data.blocks.length, store.data.tasks, store.data.sessions, store.setting('active_timer'), store.data.courses, store.data.groups, store.ui('course', 'all'),
-    store.ui('showDone', false), store.ui('showDoneArchive', true), store.configured, store.canSaveCategories, store.status === 'syncing' && !store.data.tasks.length, todayIL()]);
+    store.ui('showDone', false), store.ui('showDoneArchive', true), store.ui('showFuture', false), store.configured, store.canSaveCategories,
+    store.status === 'syncing' && !store.data.tasks.length, todayIL()]);
   if (sig === lastSig) return;
   lastSig = sig;
   renderFilters();
@@ -215,20 +221,26 @@ function renderTasks() {
   const groups = Object.fromEntries(SECTIONS.map(([k]) => [k, []]));
   for (const t of tasks) groups[bucketOf(t)].push(t);
   const archived = categories.archiveName(store.ui('course', 'all'));
-  // in the archive most tasks are done: there the done list starts open
-  const showDone = archived ? store.ui('showDoneArchive', true) : store.ui('showDone', false);
+  // the folded sections, open or not (per device). In the archive most tasks are done: there the done list starts open
+  const unfolded = {
+    done: archived ? store.ui('showDoneArchive', true) : store.ui('showDone', false),
+    future: store.ui('showFuture', false),
+  };
 
   let html = '';
   for (const [key, label] of SECTIONS) {
     const list = groups[key];
     if (!list.length) continue;
-    list.sort((a, b) => (key === 'done' ? sortKey(b).localeCompare(sortKey(a)) : sortKey(a).localeCompare(sortKey(b))));
-    if (key === 'done') {
-      html += `<section class="group done-group">
-        <button class="group-toggle" data-action="toggleDone" aria-expanded="${showDone}">
-          <span class="lbl">${label}</span><span class="count">${list.length}</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+    if (key === 'future') list.sort((a, b) => `${a.start_date} ${sortKey(a)}`.localeCompare(`${b.start_date} ${sortKey(b)}`)); // the next to start first
+    else list.sort((a, b) => (key === 'done' ? sortKey(b).localeCompare(sortKey(a)) : sortKey(a).localeCompare(sortKey(b))));
+    if (FOLDED[key]) {
+      const open = unfolded[key];
+      html += `<section class="group ${key}-group">
+        <button class="group-toggle" data-action="${FOLDED[key]}" aria-expanded="${open}">
+          ${key === 'future' ? ICON.hourglass : ''}<span class="lbl">${label}</span><span class="count">${list.length}</span>${ICON.chevron}
         </button>
-        ${showDone ? `<ul class="cards">${list.map(card).join('')}</ul>` : ''}
+        ${open && key === 'future' ? '<p class="hint small group-hint">משימות שאפשר להתחיל רק בהמשך. כל אחת חוזרת לרשימה לבד ביום שאפשר להתחיל אותה.</p>' : ''}
+        ${open ? `<ul class="cards">${list.map(card).join('')}</ul>` : ''}
       </section>`;
     } else {
       html += `<section class="group g-${key}"><h2><span class="lbl">${label}</span>${groupDate(key)}<span class="count">${list.length}</span></h2>
@@ -241,7 +253,7 @@ function renderTasks() {
     return;
   }
   if (!html) html = `<div class="empty"><p>${store.ui('course', 'all') === 'all' ? 'עוד אין משימות.' : 'אין כאן משימות.'}</p><button class="btn primary" data-action="new">משימה חדשה</button></div>`;
-  else if (!tasks.some((t) => bucketOf(t) !== 'done')) html = `<div class="empty small"><p>אין משימות פתוחות 🎉</p></div>` + html;
+  else if (!tasks.some((t) => !FOLDED[bucketOf(t)])) html = `<div class="empty small"><p>${groups.future.length ? 'אין משימות לעכשיו 🎉' : 'אין משימות פתוחות 🎉'}</p></div>` + html;
   main.innerHTML = suggestions.html() + html;
 }
 
@@ -274,6 +286,7 @@ function dueHtml(t, bucket) {
   if (bucket === 'overdue') day = dueLabel(t.due_date, '');
   else if (bucket === 'week') day = `${weekday(t.due_date)} ${shortDate(t.due_date)}`;
   else if (bucket === 'later' || bucket === 'done') day = shortDate(t.due_date);
+  else if (bucket === 'future') day = dayDiff(todayIL(), t.due_date) < 7 ? `${weekday(t.due_date)} ${shortDate(t.due_date)}` : shortDate(t.due_date);
   if (!day && !t.due_time) return '';
   return `<span class="due ${bucket === 'overdue' ? 'late' : ''}" title="${esc(dueLabel(t.due_date, t.due_time))}">${day ? `<span>${esc(day)}</span>` : ''}${t.due_time ? `<b>${esc(t.due_time)}</b>` : ''}</span>`;
 }
@@ -286,6 +299,10 @@ function card(t) {
   if (c) meta.push(`<span class="course"><i></i>${esc(categories.label(c.slug))}</span>`);
   if (t.status === 'in_progress') meta.push(`<span class="state">בתהליך</span>`);
   if (t.status === 'cancelled') meta.push(`<span class="state">בוטל</span>`);
+  // a future task: from when it can be started; on that day, a word that it's here now
+  const open = t.status !== 'done' && t.status !== 'cancelled';
+  if (startsLater(t)) meta.push(`<span class="starts" title="אפשר להתחיל ${esc(startOn(t.start_date))}">${ICON.hourglass}<span>${esc(startFrom(t.start_date))}</span></span>`);
+  else if (open && t.start_date === todayIL()) meta.push('<span class="opened">אפשר להתחיל מהיום</span>');
   const spent = store.spentMinutes(t.id);
   const est = Number(t.estimate_hours) || 0;
   if (spent || est) {
@@ -296,7 +313,6 @@ function card(t) {
   if (links) meta.push(`<span class="links" title="קישורים">${ICON.link}${links}</span>`);
   const active = timer.state();
   const running = active && active.task_id === t.id;
-  const open = t.status !== 'done' && t.status !== 'cancelled';
   return `<li class="card s-${esc(t.status)} ${running ? 'timing' : ''}" data-id="${esc(t.id)}" style="--c:${esc(c ? c.color : '#8A8F98')}">
     <button class="status" data-action="cycle" aria-label="סטטוס: ${esc(STATUS[t.status]?.label || t.status)} — הקש לשינוי"><span></span></button>
     <div class="body" data-action="edit">
@@ -333,6 +349,7 @@ function onMainClick(e) {
     store.setUi(k, !store.ui(k, k === 'showDoneArchive'));
     return render();
   }
+  if (action === 'toggleFuture') { store.setUi('showFuture', !store.ui('showFuture', false)); return render(); }
   if (action === 'leaveArchive') { store.setUi('course', 'all'); return render(); }
   if (action === 'restoreCat' || action === 'restoreGroup') {
     const p = categories.parseFilter(store.ui('course', 'all'));
@@ -347,8 +364,10 @@ function onMainClick(e) {
   if (action === 'cycle') {
     const t = store.task(id);
     const next = STATUS[t.status]?.next || 'todo';
-    store.saveTask({ id, status: next });
+    const back = startedNow(t, next);
+    store.saveTask({ id, status: next, ...(back ? { start_date: '' } : {}) });
     if (next === 'done') toast(`„${t.title}” הושלם`, { label: 'בטל', fn: () => store.saveTask({ id, status: t.status }) });
+    else if (back) toast(`„${t.title}” בתהליך — חזר לרשימה`, { label: 'בטל', fn: () => store.saveTask({ id, status: t.status, start_date: t.start_date }) });
   }
   if (action === 'edit') openEditor(id);
   if (action === 'timer') openTimer(id);
@@ -378,6 +397,11 @@ function taskMenu(id, where = 'list') {
   const today = todayIL();
   const links = (t.links || '').split('\n').map((x) => x.trim()).filter((x) => /^https?:\/\//.test(x));
   const dueChoice = (label, d) => ({ label, on: (t.due_date || '') === d, run: () => setDue(t, d) });
+  // from when it can be started (a future task waits in „עתידיות”); not after the deadline
+  const later = startsLater(t);
+  const startChoices = [['עכשיו', ''], ['מחר', addDays(today, 1)], ['בעוד שבוע', addDays(today, 7)]]
+    .filter(([, d]) => !d || !t.due_date || d <= t.due_date)
+    .map(([label, d]) => ({ label, on: d ? later && t.start_date === d : !later, run: () => setStart(t, d) }));
   return [
     { title: t.title },
     { label: 'עריכה', icon: 'edit', run: () => openEditor(id) },
@@ -386,10 +410,11 @@ function taskMenu(id, where = 'list') {
     { sep: true },
     { label: 'סטטוס', choices: Object.entries(STATUS).map(([k, v]) => ({ label: v.label, on: t.status === k, run: () => setStatus(t, k) })) },
     { label: 'הגשה', choices: [dueChoice('היום', today), dueChoice('מחר', addDays(today, 1)), dueChoice('בעוד שבוע', addDays(today, 7)), dueChoice('ללא', '')] },
+    open && store.canSaveStartDate && (later || startChoices.length > 1) ? { label: 'התחלה', choices: startChoices } : null,
     { sep: true },
     { label: 'שכפל…', icon: 'dup', hint: 'משימה חדשה עם אותם פרטים', run: () => openEditor(null, { prefill: {
       title: t.title, course: t.course || '', due_date: t.due_date || '', due_time: t.due_time || '',
-      estimate_hours: t.estimate_hours || '', notes: t.notes || '', links: t.links || '' } }) },
+      estimate_hours: t.estimate_hours || '', notes: t.notes || '', links: t.links || '', start_date: later ? t.start_date : '' } }) },
     ...links.slice(0, 3).map((u) => ({ label: `פתח ${prettyUrl(u)}`, icon: 'link', href: u })),
     { label: 'העתק את השם', icon: 'copy', run: async () => toast((await ctxmenu.copyText(t.title)) ? 'השם הועתק' : 'לא הצלחתי להעתיק') },
     { sep: true },
@@ -399,12 +424,24 @@ function taskMenu(id, where = 'list') {
   ];
 }
 
+// Starting work on a future task (status → in progress) makes it a task of now: it leaves „עתידיות”.
+function startedNow(t, status) { return status === 'in_progress' && startsLater(t); }
+
 function setStatus(t, status) {
   if (t.status === status) return;
-  const before = { id: t.id, status: t.status };
-  store.saveTask({ id: t.id, status });
+  const back = startedNow(t, status);
+  const before = { id: t.id, status: t.status, ...(back ? { start_date: t.start_date } : {}) };
+  store.saveTask({ id: t.id, status, ...(back ? { start_date: '' } : {}) });
   const word = { todo: 'חזר ל„לא התחיל”', in_progress: 'בתהליך', done: 'הושלם', cancelled: 'בוטל' }[status];
-  toast(`„${t.title}” ${word}`, { label: 'בטל', fn: () => store.saveTask(before) });
+  toast(`„${t.title}” ${word}${back ? ' — חזר לרשימה' : ''}`, { label: 'בטל', fn: () => store.saveTask(before) });
+}
+
+/** A future task from a day (it waits in „עתידיות” until then), or back to now (d = ''). */
+function setStart(t, d) {
+  if ((startsLater(t) ? t.start_date : '') === d) return;
+  const before = { id: t.id, start_date: t.start_date || '' };
+  store.saveTask({ id: t.id, start_date: d });
+  toast(d ? `„${t.title}” יופיע ברשימה ${startOn(d)}` : `„${t.title}” חזר לרשימה`, { label: 'בטל', fn: () => store.saveTask(before) });
 }
 
 function setDue(t, d) {
@@ -446,9 +483,11 @@ function openEditor(id, opts = {}) {
   const dlg = $('#editor');
   const t = id ? { ...store.task(id) } : {
     title: '', course: categories.defaultFor(store.ui('course', 'all')),
-    status: 'todo', due_date: '', due_time: '', estimate_hours: '', notes: '', links: '', ...(opts.prefill || {}),
+    status: 'todo', due_date: '', due_time: '', estimate_hours: '', notes: '', links: '', start_date: '', ...(opts.prefill || {}),
   };
   const today = todayIL();
+  const tomorrow = addDays(today, 1);
+  const future = startsLater(t); // a future task: Bahr can start it only from its start_date
   dlg.innerHTML = `<form method="dialog" class="sheet-form" novalidate>
     <header class="sheet-head">
       <h2 ${id ? 'tabindex="-1" autofocus' : ''}>${id ? 'עריכת משימה' : 'משימה חדשה'}</h2>
@@ -478,6 +517,8 @@ function openEditor(id, opts = {}) {
         <button type="button" class="chip" data-date="${addDays(today, 7)}">בעוד שבוע</button>
         <button type="button" class="chip" data-date="">ללא תאריך</button>
       </div>
+
+      ${futureHtml(future ? t.start_date : '', future, today)}
 
       <section class="time-box">
         <div class="row">
@@ -523,6 +564,20 @@ function openEditor(id, opts = {}) {
     form.due_date.value = b.dataset.date;
     if (!b.dataset.date) form.due_time.value = '';
   }));
+  // "משימה עתידית": the start date shows when it's ticked (first guess: tomorrow)
+  const fbox = $('.future-box', dlg);
+  const startMsg = $('[data-start-msg]', dlg);
+  if (fbox && form.future) {
+    form.future.addEventListener('change', () => {
+      const on = form.future.checked;
+      fbox.classList.toggle('on', on);
+      $('.future-when', fbox).hidden = !on;
+      startMsg.textContent = '';
+      if (on && !(form.start_date.value > today)) form.start_date.value = tomorrow;
+    });
+    fbox.querySelectorAll('[data-start]').forEach((b) => b.addEventListener('click', () => { form.start_date.value = b.dataset.start; startMsg.textContent = ''; }));
+    form.start_date.addEventListener('input', () => { startMsg.textContent = ''; });
+  }
   $('[data-delete]', dlg)?.addEventListener('click', () => {
     if (confirm(`למחוק את „${t.title}”? (אפשר גם לסמן "בוטל" במקום)`)) {
       store.deleteTask(id); dlg.close(); toast('המשימה נמחקה');
@@ -537,16 +592,27 @@ function openEditor(id, opts = {}) {
       patch[k] = String(fd.get(k) ?? '').trim();
     }
     if (!patch.due_date) patch.due_time = '';
+    const later = !!form.future?.checked; // (the option exists with backend v10+)
+    if (form.future) {
+      const problem = startProblem(form.start_date.value, later, patch.due_date, today);
+      if (problem) { e.preventDefault(); startMsg.textContent = problem; form.start_date.focus(); return; }
+      // not a future task: no start date — but a start day that has already come stays as it was
+      const was = (id && store.task(id)?.start_date) || '';
+      patch.start_date = later ? form.start_date.value : was && was <= today ? was : '';
+    }
     if (id) {
       // send only what changed
       const orig = store.task(id);
       for (const k of Object.keys(patch)) if ((orig[k] || '') === patch[k]) delete patch[k];
-      if (Object.keys(patch).length) { store.saveTask({ id, ...patch }); toast('נשמר'); }
+      if (Object.keys(patch).length) {
+        store.saveTask({ id, ...patch });
+        toast(later && patch.start_date ? `נשמר — המשימה תופיע ברשימה ${startOn(patch.start_date)}` : 'נשמר');
+      }
     } else {
       if (opts.prefill?.source) patch.source = opts.prefill.source;
       if (opts.prefill?.moodle_ref) patch.moodle_ref = opts.prefill.moodle_ref;
       const newId = store.saveTask(patch);
-      if (opts.onSaved) opts.onSaved(newId); else toast('המשימה נוספה');
+      if (opts.onSaved) opts.onSaved(newId); else toast(later ? `המשימה נוספה — תופיע ברשימה ${startOn(patch.start_date)}` : 'המשימה נוספה');
     }
   });
   // time section
@@ -586,6 +652,39 @@ function openEditor(id, opts = {}) {
   $('[data-starttimer]', dlg)?.addEventListener('click', () => { dlg.close(); openTimer(id); });
 
   dlg.showModal();
+}
+
+/**
+ * The editor's "משימה עתידית" option: a task Bahr can start only from a later day waits in „עתידיות” until then.
+ * Needs backend v10 (store.canSaveStartDate); with an older one, a line that says it comes with the update.
+ */
+function futureHtml(start, on, today) {
+  if (!store.canSaveStartDate) {
+    return store.configured && store.apiVersion
+      ? '<p class="hint small">„משימה עתידית” (מוסתרת עד היום שאפשר להתחיל אותה) תופיע כאן אחרי עדכון השרת (Apps Script) — ראה SETUP.md.</p>' : '';
+  }
+  const tomorrow = addDays(today, 1);
+  return `<section class="future-box ${on ? 'on' : ''}">
+    <label class="check"><input type="checkbox" name="future" ${on ? 'checked' : ''}> משימה עתידית — אפשר להתחיל אותה רק בהמשך</label>
+    <div class="future-when" ${on ? '' : 'hidden'}>
+      <label class="field"><span>אפשר להתחיל ב-</span><input type="date" name="start_date" min="${tomorrow}" value="${esc(start)}"></label>
+      <div class="chips quick">
+        <button type="button" class="chip" data-start="${tomorrow}">מחר</button>
+        <button type="button" class="chip" data-start="${addDays(today, 7)}">בעוד שבוע</button>
+      </div>
+      <p class="hint small">עד אז היא מחכה ב„עתידיות” בסוף הרשימה ולא מפריעה למשימות של עכשיו. ביום הזה היא חוזרת לרשימה לבד.</p>
+    </div>
+    <p class="msg err form-msg" data-start-msg></p>
+  </section>`;
+}
+
+/** What's wrong with the editor's start date ('' = nothing, or not a future task). */
+function startProblem(start, later, due, today) {
+  if (!later) return '';
+  if (!start) return 'בחר מאיזה יום אפשר להתחיל.';
+  if (start <= today) return 'משימה עתידית מתחילה אחרי היום: בחר יום ממחר והלאה, או בטל את הסימון.';
+  if (due && start > due) return `אי אפשר להתחיל אחרי ההגשה (${shortDate(due)}): בחר יום עד אז.`;
+  return '';
 }
 
 function linkList(links) {

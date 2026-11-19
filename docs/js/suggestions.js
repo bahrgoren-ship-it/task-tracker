@@ -12,7 +12,7 @@ let ui = {};
 let open = true;
 
 const FIELDS = {
-  tasks: ['title', 'course', 'status', 'due_date', 'due_time', 'estimate_hours', 'notes', 'links'],
+  tasks: ['title', 'course', 'status', 'due_date', 'due_time', 'estimate_hours', 'notes', 'links', 'start_date'],
   blocks: ['task_id', 'start', 'end', 'state', 'note'],
   sessions: ['task_id', 'start', 'end', 'minutes', 'note'],
   courses: ['slug', 'name_he', 'short_he', 'group', 'color', 'number', 'moodle_course_id', 'moodle_folder', 'active', 'calendar'],
@@ -26,7 +26,7 @@ const TABLES = { tasks: 'tasks', task: 'tasks', blocks: 'blocks', block: 'blocks
 const LABEL = { title: 'שם', course: 'קורס', status: 'סטטוס', due_date: 'תאריך הגשה', due_time: 'שעה', estimate_hours: 'הערכת זמן',
   notes: 'הערות', links: 'קישורים', task_id: 'משימה', start: 'התחלה', end: 'סוף', state: 'מצב', note: 'הערה', minutes: 'דקות', blocks: 'בלוקי עבודה',
   name_he: 'שם', short_he: 'שם קצר', group: 'קטגוריית־על', color: 'צבע', number: 'מספר קורס', moodle_course_id: 'קורס במודל',
-  moodle_folder: 'תיקייה ב-Drive', calendar: 'יומן', active: 'מצב', name: 'שם', kind: 'סוג', slug: 'מזהה' };
+  moodle_folder: 'תיקייה ב-Drive', calendar: 'יומן', active: 'מצב', name: 'שם', kind: 'סוג', slug: 'מזהה', start_date: 'אפשר להתחיל' };
 const STATUS_HE = { todo: 'לא התחיל', in_progress: 'בתהליך', done: 'הושלם', cancelled: 'בוטל' };
 const STATE_HE = { draft: 'מתוכנן', planned: 'מתוכנן', done: 'בוצע', skipped: 'דילגתי' }; // 'draft' = old value, saved as planned
 const WHAT = { tasks: 'משימה', blocks: 'בלוק עבודה', sessions: 'זמן עבודה', courses: 'קטגוריה', groups: 'קטגוריית־על' };
@@ -63,6 +63,9 @@ export function parse(sg) {
   if (op === 'update' && !Object.keys(fields).length) problems.push('אין מה לשנות');
   const blocks = table === 'tasks' && op === 'create' && Array.isArray(raw.blocks) ? raw.blocks : [];
   const check = (f, merged) => {
+    if (table === 'tasks' && f.start_date !== undefined && !store.canSaveStartDate) problems.push('צריך לעדכן את השרת (Apps Script) כדי לאשר תאריך התחלה (משימה עתידית)');
+    if (f.start_date && !DATE.test(f.start_date)) problems.push('תאריך התחלה צריך להיות yyyy-mm-dd');
+    if (table === 'tasks' && DATE.test(merged.start_date || '') && DATE.test(merged.due_date || '') && merged.start_date > merged.due_date) problems.push('תאריך ההתחלה אחרי תאריך ההגשה');
     if (f.course !== undefined && f.course && !store.course(f.course)) problems.push(`קטגוריה לא מוכרת: ${f.course}`);
     if (table === 'tasks' && op === 'create' && f.course && store.categoryArchived(f.course)) problems.push(`הקטגוריה „${store.course(f.course).name_he}” בארכיון`);
     if (table === 'courses' && f.group !== undefined && !store.group(f.group)) problems.push(`קטגוריית־על לא מוכרת: ${f.group}`);
@@ -106,6 +109,7 @@ export function parse(sg) {
 }
 
 function show(k, v) {
+  if (k === 'start_date') return !v ? 'עכשיו' : DATE.test(v) ? dueLabel(v, '') : v; // (empty = can start now)
   if (v === '' || v === undefined) return '—';
   if (k === 'course') { const c = store.course(v); return c ? c.short_he || c.name_he : v; }
   if (k === 'status') return STATUS_HE[v] || v;

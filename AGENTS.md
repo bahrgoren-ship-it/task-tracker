@@ -10,7 +10,7 @@ Bahr's task tracker (homework first; may grow to all tasks): a Hebrew (RTL) inst
 | `docs/js/app.js` | UI: tasks screen, task editor, settings dialog. |
 | `docs/js/categories.js` | Categories (tab `courses`; a course is one kind) and meta categories (tab `groups`: a semester, a project, general tasks): the filter chips, the task editor's picker, the "קטגוריות" sheet (add / edit / archive / restore / delete-if-unused), the archive view. |
 | `docs/js/store.js` | Local copy of the data + queue of unsent changes + calls to the backend. |
-| `docs/js/dates.js` | Date helpers (everything in Israel time, strings `yyyy-mm-dd` / `HH:MM`). |
+| `docs/js/dates.js` | Date helpers (everything in Israel time, strings `yyyy-mm-dd` / `HH:MM`), the list's sections (`bucketOf`) and future tasks (`startsLater`). |
 | `docs/js/timer.js` | Stopwatch / pomodoro. State lives in the Sheet (`settings.active_timer`) so devices share it; focus time is saved to `sessions`. |
 | `docs/js/planner.js` | Planner: custom RTL week grid, drag tasks from the tray into work blocks (`blocks`), move/resize, tap-to-place, busy layer from Google Calendar. A placed block is in Google Calendar at once (no drafts / "אשר תכנון" since v9). No external libraries. |
 | `docs/js/ctxmenu.js` | Right-click menus (long-press on touch screens): the menu component (position, keyboard, closing, touch long-press). What each menu offers is built where the thing lives: `taskMenu` / `chipMenu` in app.js, `menuAt` (blocks, empty times) in planner.js, `menuFor` (messages) in inbox.js. |
@@ -44,6 +44,15 @@ Bahr's task tracker (homework first; may grow to all tasks): a Hebrew (RTL) inst
   only while nothing uses it, and the Moodle check reads only courses with a `moodle_course_id` that aren't archived.
 - Saving categories needs backend v7: the app checks `store.canSaveCategories` (an older backend would refuse the
   whole batch, so nothing for `courses` / `groups` may be queued before that).
+- **Future tasks (backend v10).** `tasks.start_date` = the day Bahr can start the task. While it's after today the task
+  is a future task — `startsLater(task, day)` in dates.js (open, and no deadline before the start date) — and waits out
+  of sight: the list's folded section „עתידיות” (bucket `future`; open/closed in `ui.showFuture`), not in the header's
+  count, and on the planner (tray, choosing a task for an empty time) only from its start day — the tray's last item
+  counts the rest and jumps to the first one's days; "שבץ בתכנון" moves the view there. On the start day it's back by
+  itself, marked „אפשר להתחיל מהיום”. Starting work on it (timer, status → in progress) clears the date. Set in the
+  editor („משימה עתידית”) or the right-click row „התחלה”; never after the deadline. Anything new that offers tasks for
+  now must skip future ones (deadlines still show). An older backend would drop the field silently, so the app offers
+  it only with `store.canSaveStartDate` (suggestions with it wait until then).
 - **Calendar per category (backend v8).** A block's event goes to its task's category's calendar: `courses.calendar`,
   else `blocks_calendar_name` for courses (categories in a semester) / `other_blocks_calendar_name` for everything else
   (`calendarNameFor_` in Code.gs, `calendarOf` in categories.js — keep the two the same). `blocks.calendar_id` = the
@@ -79,4 +88,5 @@ assignments, every 15 min) + AI review (Gemini suggests tasks not already covere
 6. ✅ Categories and meta categories edited in the app, with an archive (schema 7).
 7. ✅ A Google Calendar per category, with defaults for courses and for everything else (schema 8).
 8. ✅ Changes made in Google Calendar come back within about a minute (calendar triggers; schema 9).
+9. ✅ Future tasks: a start date keeps a task out of sight until the day Bahr can start it (schema 10).
 Tests (Playwright + fake Apps Script services) are not in the repo; keep behaviour covered when changing things.

@@ -1,4 +1,4 @@
-# Task tracker — data schema (schema_version 9)
+# Task tracker — data schema (schema_version 10)
 
 The tracker's data lives in ONE Google Sheet:
 
@@ -40,8 +40,15 @@ Rules for anyone (human or AI) who edits it:
 | `moodle_ref` | `post:<id>` or `assign:<id>` when the task came from Moodle. |
 | `calendar_event_id` | App-managed: the deadline's event in the Google Calendar "משימות – הגשות". |
 | `created_at`, `updated_at` | Timestamps. |
+| `start_date` | Optional `yyyy-mm-dd`: the day Bahr can **start** the task (a future task — משימה עתידית, e.g. homework that will be published later). Empty = now. Not after `due_date`. |
 
 **Overdue** = `due_date` before today and `status` not `done`/`cancelled` (shown in red).
+
+**Future task** (משימה עתידית) = `start_date` after today, `status` not `done`/`cancelled`, and no `due_date` before
+`start_date`. The app keeps it out of sight until that day: in the folded section „עתידיות” at the end of the list, out
+of the header's count, and offered on the planner only from that day. On `start_date` it is back in the list by
+itself (marked „אפשר להתחיל מהיום”). Starting work on it (timer, or status → `in_progress`) clears `start_date`.
+In the Sheet it is shown in italics.
 
 ## Tab `sessions` — רישומי עבודה (time actually worked)
 
@@ -164,7 +171,7 @@ in both, empty = the app's calendar `משימות – בלוקי עבודה`), `
 block events before schema 8; only a fallback for blocks without `calendar_id`), `calendar_last_sync`, `calendar_status` (`ok · time` / `error · time · what`),
 `calendar_watch` (calendars watched for changes made in Google Calendar: `ok · N calendars · time` / `error · time · what`), `moodle_last_check`,
 `moodle_status` (all app-managed), `ai_model` (empty = automatic: newest Flash-Lite, then newest Flash; or a model id to try first),
-`ai_status` (`ok · …` / `waiting · why · until · at` / `error · what · at`), `ai_last_error` (Gemini's text), `schema_version` (9).
+`ai_status` (`ok · …` / `waiting · why · until · at` / `error · what · at`), `ai_last_error` (Gemini's text), `schema_version` (10).
 
 ## Google Calendar (optional, switched on in the app's settings)
 
@@ -200,6 +207,7 @@ block events before schema 8; only a fallback for blocks without `calendar_id`),
   courses into the meta category `winter-2026-2027`. Schema 8 added `courses.calendar`, `blocks.calendar_id` and the
   setting `other_blocks_calendar_name` (`Bahr Goren`; his main calendar's name if no calendar is called that).
   Schema 9 added the setting `calendar_watch` (no column changes) and turned drafts into planned blocks.
+  Schema 10 added `tasks.start_date` (future tasks; empty for every existing task).
 - **The app** (https://bahrgoren-ship-it.github.io/task-tracker/) talks to an Apps Script web app bound to the
   Sheet (code: `apps-script/Code.gs` in the GitHub repo `bahrgoren-ship-it/task-tracker`). API: POST JSON
   `{key, action}` with `action` = `ping` · `bootstrap` (returns all tabs; `pull: 1` = first bring in changes made in Google Calendar) · `batch` (`ops: [{op:'upsert', table, row} |

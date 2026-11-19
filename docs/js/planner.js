@@ -11,8 +11,11 @@
 // - Right-click (menuAt): a block → edit, task, timer, state, move / duplicate to tomorrow, copy, calendar; an empty
 //   time → new block there, paste a copied block; a task in the tray / a deadline → the task's menu (from app.js).
 //   On a touch screen a long-press here drags, so it opens no menu.
+// - A future task (a start date after today, see dates.startsLater) is offered — in the tray and when choosing a task
+//   for an empty time — only from its start day: it shows up in the tray once the visible days reach that day. The
+//   tray's last item says how many are waiting and jumps to the first one's days.
 import { store } from './store.js';
-import { todayIL, addDays, dayDiff, weekday, shortDate, nowIL, fmtMinutes, dueLabel } from './dates.js';
+import { todayIL, addDays, dayDiff, weekday, shortDate, nowIL, fmtMinutes, dueLabel, startsLater, startFrom } from './dates.js';
 import { calendarState, calendarText, noticeHtml } from './notices.js';
 import { calendarOf, calLabel } from './categories.js';
 
@@ -63,8 +66,11 @@ function daysForWidth() {
 }
 function resetView() {
   view.days = daysForWidth();
-  const t = todayIL();
-  view.start = view.days === 7 ? addDays(t, -new Date(t + 'T12:00:00Z').getUTCDay()) : t; // week view starts Sunday
+  showDay(todayIL());
+}
+/** Moves the view so that day d is visible: its week (starting Sunday) in the week view, else from d on. */
+function showDay(d) {
+  view.start = view.days === 7 ? addDays(d, -new Date(d + 'T12:00:00Z').getUTCDay()) : d;
 }
 function visibleDays() { return Array.from({ length: view.days }, (_, i) => addDays(view.start, i)); }
 
@@ -130,10 +136,19 @@ export function render(force = false) {
   ui.onRender?.();
 }
 
+const HOURGLASS = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h10M7 21h10M8 3v3.5c0 1.6 4 3.8 4 5.5s-4 3.9-4 5.5V21M16 3v3.5c0 1.6-4 3.8-4 5.5s4 3.9 4 5.5V21"/></svg>';
+
 function trayHtml() {
-  const tasks = store.data.tasks.filter(plannable)
+  const days = visibleDays();
+  const open = store.data.tasks.filter(plannable);
+  // future tasks that can't start in the visible days wait (the last item tells how many, and jumps to them)
+  const later = open.filter((t) => startsLater(t, days[days.length - 1])).sort((a, b) => a.start_date.localeCompare(b.start_date));
+  const tasks = open.filter((t) => !later.includes(t))
     .sort((a, b) => `${a.due_date || '9999'}${a.due_time}`.localeCompare(`${b.due_date || '9999'}${b.due_time}`));
-  if (!tasks.length) return '<p class="hint small">אין משימות פתוחות.</p>';
+  const waiting = later.length ? `<li class="tray-later"><button type="button" data-jump="${esc(later[0].start_date)}" title="מעבר לימים שבהם אפשר להתחיל ${later.length === 1 ? 'אותה' : 'את הקרובה'}">
+      <b>${HOURGLASS}${later.length === 1 ? 'משימה עתידית אחת' : `${later.length} משימות עתידיות`}</b>
+      <small>${later.length === 1 ? '' : 'הקרובה '}${esc(startFrom(later[0].start_date))} ←</small></button></li>` : '';
+  if (!tasks.length) return `<p class="hint small">${later.length ? 'אין משימות שאפשר להתחיל בימים האלה.' : 'אין משימות פתוחות.'}</p>${waiting ? `<ul>${waiting}</ul>` : ''}`;
   return `<p class="tray-hint">${window.matchMedia('(pointer: coarse)').matches ? 'החזק וגרור משימה ללוח, או הקש עליה ואז על שעה' : 'גרור משימה ללוח, או לחץ עליה ואז על שעה'}. כדי להחזיר בלוק — גרור אותו לכאן או הקש על ✕.</p>
     <ul>${tasks.map((t) => {
       const c = store.course(t.course);
@@ -142,9 +157,10 @@ function trayHtml() {
       return `<li class="tray-task ${selectedTask === t.id ? 'sel' : ''}" data-task="${esc(t.id)}" style="--c:${esc(c ? c.color : '#8A8F98')}">
         <b dir="auto">${esc(t.title)}</b>
         <small>${t.due_date ? `<span class="${dayDiff(todayIL(), t.due_date) < 0 ? 'late' : ''}">${esc(dueLabel(t.due_date, t.due_time))}</span>` : 'ללא תאריך'}</small>
+        ${startsLater(t) ? `<small class="from">${HOURGLASS}${esc(startFrom(t.start_date))}</small>` : ''}
         <small>מתוכנן ${fmtMinutes(planned)}${est ? ` מתוך ${fmtMinutes(est)}` : ''}${missing > 0 ? ` <em>חסר ${fmtMinutes(missing)}</em>` : ''}</small>
       </li>`;
-    }).join('')}</ul>`;
+    }).join('')}${waiting}</ul>`;
 }
 
 function headHtml(d) {
@@ -253,6 +269,8 @@ function onClick(e) {
   if (e.target.closest('[data-cancelsel]')) { selectedTask = null; return render(true); }
   const ed = e.target.closest('[data-edit]');
   if (ed) return ui.openEditor(ed.dataset.edit);
+  const jump = e.target.closest('[data-jump]'); // the tray's "N משימות עתידיות": to the first one's days
+  if (jump) { showDay(jump.dataset.jump); return render(true); }
   const tt = e.target.closest('[data-task]');
   if (tt) { selectedTask = selectedTask === tt.dataset.task ? null : tt.dataset.task; return render(true); }
   const unplace = e.target.closest('[data-unplace]');
@@ -506,8 +524,14 @@ export function menuAt(target, at, e) {
   return false;
 }
 
-/** From the task list's menu: pick this task, then a time on the grid places it (like tapping it in the tray). */
+/**
+ * From the task list's menu: pick this task, then a time on the grid places it (like tapping it in the tray).
+ * A future task first moves the view to the days it can start in.
+ */
 export function selectForPlacing(taskId) {
+  const t = store.task(taskId);
+  const days = visibleDays();
+  if (t && startsLater(t, days[days.length - 1])) showDay(t.start_date);
   selectedTask = taskId;
   render(true);
   root.querySelector(`.pl-tray [data-task="${CSS.escape(taskId)}"]`)?.scrollIntoView({ block: 'nearest' });
@@ -581,7 +605,8 @@ function eventUrl(b) {
 
 function openChooser(day, startMin) {
   const dlg = document.querySelector('#blockSheet');
-  const tasks = store.data.tasks.filter(plannable)
+  const open = store.data.tasks.filter(plannable);
+  const tasks = open.filter((t) => !startsLater(t, day)) // (future tasks from their start day on)
     .sort((a, b) => `${a.due_date || '9999'}`.localeCompare(`${b.due_date || '9999'}`));
   dlg.innerHTML = `<div class="sheet-form">
     <header class="sheet-head"><h2 tabindex="-1" autofocus>מה לעשות ב-${toHHMM(startMin)}, יום ${weekday(day)} ${shortDate(day)}?</h2>
@@ -589,7 +614,7 @@ function openChooser(day, startMin) {
     <div class="sheet-body"><ul class="choose-list">${tasks.map((t) => {
       const c = store.course(t.course);
       return `<li><button type="button" data-pick="${esc(t.id)}" style="--c:${esc(c ? c.color : '#8A8F98')}"><i></i><b>${esc(t.title)}</b><small>${esc(t.due_date ? dueLabel(t.due_date, t.due_time) : '')}</small></button></li>`;
-    }).join('') || '<li class="hint">אין משימות פתוחות.</li>'}</ul></div></div>`;
+    }).join('') || `<li class="hint">${open.length ? 'אין משימות שאפשר להתחיל ביום הזה.' : 'אין משימות פתוחות.'}</li>`}</ul></div></div>`;
   dlg.querySelector('[data-close]').onclick = () => dlg.close();
   dlg.querySelectorAll('[data-pick]').forEach((b) => (b.onclick = () => { createBlock(b.dataset.pick, day, startMin); dlg.close(); }));
   dlg.showModal();

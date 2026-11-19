@@ -20,6 +20,8 @@ const EMPTY = { tasks: [], sessions: [], blocks: [], courses: [], groups: [], se
 const KEY = { tasks: 'id', sessions: 'id', blocks: 'id', courses: 'slug', groups: 'id', moodle_inbox: 'id', settings: 'key', suggestions: 'id' };
 // backend version that can save categories (tab courses) and meta categories (tab groups)
 export const CATEGORIES_API = 7;
+// backend version that saves tasks.start_date (future tasks); an older one would silently drop it
+export const FUTURE_API = 10;
 
 export function newId(prefix) {
   const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
@@ -210,6 +212,8 @@ class Store {
   }
 
   deleteTask(id) { this.change({ op: 'delete', table: 'tasks', id }); }
+  /** Can a task get a start date (a future task)? Needs backend v10 (FUTURE_API). */
+  get canSaveStartDate() { return this.configured && (this.isDemo || this.apiVersion >= FUTURE_API); }
 
   /* ---------- time tracking ---------- */
   // A session = a stretch of real work on a task (from the timer or added by hand).

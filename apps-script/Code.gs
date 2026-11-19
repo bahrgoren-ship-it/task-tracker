@@ -13,6 +13,8 @@
  * category belongs to a meta category (tab 'groups': a semester, a project, general tasks). Bahr adds, edits and
  * archives both in the app; an archived one is hidden there with its tasks (nothing is deleted) and its courses are
  * no longer checked on Moodle.
+ * Future tasks: a task may have a start date (tasks.start_date, the day Bahr can start it); until then the app keeps
+ * it out of sight, in „עתידיות” at the end of the list.
  *
  * Setup (once): run setup() from the Apps Script editor, copy the key from the log,
  * then Deploy → New deployment → Web app (Execute as: Me, Who has access: Anyone).
@@ -23,17 +25,19 @@
 
 const SHEET_ID = '10qLYln2zUiMo7dEI3xZ8pj4ncGX7TRmATZNuZfvUfWM';
 const TZ = 'Asia/Jerusalem';
-const API_VERSION = 9; // 5: calendars action, chosen blocks calendar, batch returns fresh rows · 6: suggestions tab
+const API_VERSION = 10; // 5: calendars action, chosen blocks calendar, batch returns fresh rows · 6: suggestions tab
 // · 7: categories and meta categories (tabs courses + groups) written by the app, archive
 // · 8: a Google Calendar per category (courses.calendar; defaults: courses / everything else), blocks.calendar_id
 // · 9: changes made in Google Calendar come back within about a minute (calendar triggers; bootstrap {pull: 1});
 //   no drafts / "אשר תכנון" any more — a block placed on the planner is in the calendar at once
-const SCHEMA_VERSION = 9; // bump when SCHEMA / settings change; the Sheet is migrated automatically
+// · 10: future tasks — tasks.start_date (the app hides a task until the day Bahr can start it)
+const SCHEMA_VERSION = 10; // bump when SCHEMA / settings change; the Sheet is migrated automatically
 
 // Column order of each tab. Must match row 1 of the Sheet (see SCHEMA.md).
 const SCHEMA = {
+  // start_date = the day Bahr can start the task (empty = now); until then the app keeps it in „עתידיות”
   tasks: ['id', 'title', 'course', 'status', 'due_date', 'due_time', 'estimate_hours', 'spent_hours', 'notes',
-    'links', 'source', 'moodle_ref', 'calendar_event_id', 'created_at', 'updated_at'],
+    'links', 'source', 'moodle_ref', 'calendar_event_id', 'created_at', 'updated_at', 'start_date'],
   sessions: ['id', 'task_id', 'start', 'end', 'minutes', 'kind', 'note', 'updated_at'],
   // calendar_id = the Google Calendar that holds the block's event now (app-managed)
   blocks: ['id', 'task_id', 'start', 'end', 'state', 'sync_calendar', 'calendar_event_id', 'note', 'updated_at', 'calendar_id'],
@@ -94,7 +98,7 @@ const DELETABLE = ['tasks', 'sessions', 'blocks', 'courses', 'groups'];
 const REQUIRED = { tasks: ['title'], sessions: ['task_id', 'start'], blocks: ['task_id', 'start', 'end'],
   courses: ['name_he'], groups: ['name'], moodle_inbox: ['moodle_ref'], suggestions: ['op'] };
 // How Date cells (if someone typed a real date into the Sheet) are turned back into text.
-const DATE_FORMAT = { due_date: 'yyyy-MM-dd', due_time: 'HH:mm', posted_at: 'yyyy-MM-dd HH:mm',
+const DATE_FORMAT = { due_date: 'yyyy-MM-dd', start_date: 'yyyy-MM-dd', due_time: 'HH:mm', posted_at: 'yyyy-MM-dd HH:mm',
   start: 'yyyy-MM-dd HH:mm', end: 'yyyy-MM-dd HH:mm', created_at: 'yyyy-MM-dd HH:mm',
   updated_at: 'yyyy-MM-dd HH:mm', ai_checked_at: 'yyyy-MM-dd HH:mm', archived_at: 'yyyy-MM-dd' };
 
@@ -515,7 +519,9 @@ const AI_HELP = [
   '',
   'Allowed fields:',
   '  tasks:    title, course (a slug from the courses tab), status (todo | in_progress | done | cancelled), due_date (yyyy-mm-dd),',
-  '            due_time (HH:MM), estimate_hours (number), notes, links (one URL per line).',
+  '            due_time (HH:MM), estimate_hours (number), notes, links (one URL per line),',
+  '            start_date (yyyy-mm-dd, for a future task: the day he can start it, e.g. when the assignment is published; the',
+  '            app keeps the task out of sight until then. Not after due_date. "" = he can start it now).',
   '            create may also include "blocks": [{"start":"2026-11-10 18:00","end":"2026-11-10 19:00"}] to plan work time for it.',
   '  blocks:   task_id, start, end ("yyyy-mm-dd HH:MM", Israel time), state (planned | done | skipped), note.',
   '            A block is in Bahr\'s Google Calendar as soon as it exists (once he approves the suggestion).',
@@ -539,6 +545,8 @@ const AI_HELP = [
   '  tasks create   {"title":"הכנה לבוחן אמצע","course":"algebraic-methods","due_date":"2026-12-13","estimate_hours":6}',
   '  tasks update   row_id t_ab12cd   {"due_date":"2026-11-22","due_time":"12:00"}',
   '  tasks update   row_id t_ab12cd   {"status":"done"}',
+  '  tasks create   {"title":"תרגיל בית 4","course":"statistics-1","start_date":"2026-12-06","due_date":"2026-12-20","due_time":"23:59"}',
+  '  tasks update   row_id t_ab12cd   {"start_date":""}   (a future task he can start now)',
   '  blocks create  {"task_id":"t_ab12cd","start":"2026-11-10 18:00","end":"2026-11-10 20:00","state":"planned"}',
   '  blocks delete  row_id b_xy34zz   {}',
   '  courses create {"name_he":"סטטיסטיקה 2","short_he":"סטטיסטיקה 2","group":"spring-2027","slug":"statistics-2"}',
@@ -631,12 +639,18 @@ function styleTab_(sh, table, n) {
     idsOf('course', 'courses');
     const all = sh.getRange(2, 1, rows, n);
     const st = String.fromCharCode(64 + col('status')), due = String.fromCharCode(64 + col('due_date'));
+    const start = String.fromCharCode(64 + col('start_date'));
     sh.setConditionalFormatRules([
       SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied(
         '=AND($' + due + '2<>"",DATEVALUE($' + due + '2)<TODAY(),$' + st + '2<>"done",$' + st + '2<>"cancelled")')
         .setFontColor('#C0392B').setBold(true).setRanges([all]).build(),
       SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied(
         '=OR($' + st + '2="done",$' + st + '2="cancelled")').setFontColor('#9AA0A6').setRanges([all]).build(),
+      // a future task (start date after today; the app keeps it in „עתידיות”): italic, quieter
+      SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied(
+        '=AND($' + start + '2<>"",DATEVALUE($' + start + '2)>TODAY(),$' + st + '2<>"done",$' + st + '2<>"cancelled",' +
+        'OR($' + due + '2="",DATEVALUE($' + due + '2)>=DATEVALUE($' + start + '2)))')
+        .setFontColor('#6B7C93').setItalic(true).setRanges([all]).build(),
     ]);
   }
   if (table === 'sessions') list('kind', ['stopwatch', 'pomodoro', 'manual']);
@@ -1956,6 +1970,7 @@ function aiPrompt_(batch, courses, tasks, pending) {
   const taskLines = tasks.map(function (t) {
     return '- id=' + t.id + ' | ' + t.title + ' | course=' + (t.course || '-') + ' | status=' + t.status +
       ' | due=' + (t.due_date ? t.due_date + (t.due_time ? ' ' + t.due_time : '') : '-') +
+      (t.start_date ? ' | can_start=' + t.start_date : '') + // a future task (hidden in his app until then)
       (t.notes ? ' | notes=' + String(t.notes).replace(/\s+/g, ' ').slice(0, 160) : '');
   }).join('\n') || '(none)';
   const pendingLines = pending.map(function (p) { return '- ' + p; }).join('\n') || '(none)';
