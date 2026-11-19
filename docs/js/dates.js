@@ -69,9 +69,40 @@ export function dueLabel(date, time) {
   return time ? `${s} · ${time}` : s;
 }
 
-// Which section of the list a task falls into.
+/**
+ * A future task ("משימה עתידית"): open, and Bahr can only start it after `day` (default today), on its start_date.
+ * Until then it waits out of sight: the list's „עתידיות” section, and the planner offers it only from that day.
+ * A deadline before the start date wins (bad data): such a task is never hidden.
+ */
+export function startsLater(task, day = todayIL()) {
+  const s = (task && task.start_date) || '';
+  if (!s || s <= day || task.status === 'done' || task.status === 'cancelled') return false;
+  return !task.due_date || task.due_date >= s;
+}
+
+// When a future task can be started: { word: 'היום' | 'מחר' } · { day: 'יום ה׳ 12.12' } (this week) · { date: '12.12' }
+function startParts(date) {
+  const diff = dayDiff(todayIL(), date);
+  if (diff === 0) return { word: 'היום' };
+  if (diff === 1) return { word: 'מחר' };
+  if (diff > 1 && diff < 7) return { day: `יום ${weekday(date)} ${shortDate(date)}` };
+  return { date: shortDate(date) };
+}
+/** "ממחר" · "מיום ה׳ 12.12" · "מ-12.12" — on a future task: from when it can be started. */
+export function startFrom(date) {
+  const p = startParts(date);
+  return p.word ? `מ${p.word}` : p.day ? `מ${p.day}` : `מ-${p.date}`;
+}
+/** "מחר" · "ביום ה׳ 12.12" · "ב-12.12" — in a sentence: "יופיע ברשימה …". */
+export function startOn(date) {
+  const p = startParts(date);
+  return p.word ? p.word : p.day ? `ב${p.day}` : `ב-${p.date}`;
+}
+
+// Which section of the list a task falls into ('future' = a future task, see startsLater).
 export function bucketOf(task) {
   if (task.status === 'done' || task.status === 'cancelled') return 'done';
+  if (startsLater(task)) return 'future';
   if (!task.due_date) return 'nodate';
   const diff = dayDiff(todayIL(), task.due_date);
   if (diff < 0) return 'overdue';

@@ -21,7 +21,9 @@ Columns:
 
 Allowed fields:
   tasks:    title, course (a slug from the courses tab), status (todo | in_progress | done | cancelled), due_date (yyyy-mm-dd),
-            due_time (HH:MM), estimate_hours (number), notes, links (one URL per line).
+            due_time (HH:MM), estimate_hours (number), notes, links (one URL per line),
+            start_date (yyyy-mm-dd, for a future task: the day he can start it, e.g. when the assignment is published; the
+            app keeps the task out of sight until then. Not after due_date. "" = he can start it now).
             create may also include "blocks": [{"start":"2026-11-10 18:00","end":"2026-11-10 19:00"}] to plan work time for it.
   blocks:   task_id, start, end ("yyyy-mm-dd HH:MM", Israel time), state (planned | done | skipped), note.
             A block is in Bahr's Google Calendar as soon as it exists (once he approves the suggestion).
@@ -45,6 +47,8 @@ Examples (fields column):
   tasks create   {"title":"הכנה לבוחן אמצע","course":"algebraic-methods","due_date":"2026-12-13","estimate_hours":6}
   tasks update   row_id t_ab12cd   {"due_date":"2026-11-22","due_time":"12:00"}
   tasks update   row_id t_ab12cd   {"status":"done"}
+  tasks create   {"title":"תרגיל בית 4","course":"statistics-1","start_date":"2026-12-06","due_date":"2026-12-20","due_time":"23:59"}
+  tasks update   row_id t_ab12cd   {"start_date":""}   (a future task he can start now)
   blocks create  {"task_id":"t_ab12cd","start":"2026-11-10 18:00","end":"2026-11-10 20:00","state":"planned"}
   blocks delete  row_id b_xy34zz   {}
   courses create {"name_he":"סטטיסטיקה 2","short_he":"סטטיסטיקה 2","group":"spring-2027","slug":"statistics-2"}

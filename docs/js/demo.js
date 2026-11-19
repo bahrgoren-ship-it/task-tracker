@@ -3,7 +3,7 @@
 
 import { todayIL, addDays, nowStampIL } from './dates.js';
 
-const LS_KEY = 'ht.demo.v8';
+const LS_KEY = 'ht.demo.v10';
 
 // meta categories: this semester, everyday tasks, and a finished semester in the archive
 const GROUPS = [
@@ -35,7 +35,7 @@ function seed() {
   const task = (id, title, course, status, offset, extra = {}) => ({
     id, title, course, status, due_date: offset === null ? '' : addDays(t, offset), due_time: '',
     estimate_hours: '', notes: '', links: '', source: 'manual', moodle_ref: '', calendar_event_id: '',
-    created_at: now, updated_at: now, spent_hours: '', ...extra,
+    created_at: now, updated_at: now, spent_hours: '', start_date: '', ...extra,
   });
   return {
     tasks: [
@@ -51,6 +51,10 @@ function seed() {
       task('t_demo09', 'קריאה: עצים מאוזנים', 'ds-algs', 'todo', 3, { estimate_hours: '1.5', due_time: '12:00' }),
       task('t_demo10', 'לחדש את כרטיס הרב-קו', 'c_daily1', 'todo', 2),
       task('t_demo11', 'לקבוע תור לרופא שיניים', 'c_daily1', 'todo', null),
+      // future tasks: hidden in „עתידיות” until their start date
+      task('t_demo16', 'תרגיל בית 3', 'statistics-1', 'todo', 16, { start_date: addDays(t, 5), estimate_hours: '5', notes: 'יפורסם במודל אחרי ההגשה של תרגיל בית 2.' }),
+      task('t_demo17', 'חזרה לקראת הבוחן', 'ds-algs', 'todo', 30, { start_date: addDays(t, 18), estimate_hours: '8' }),
+      task('t_demo18', 'לשלם את חשבון החשמל', 'c_daily1', 'todo', null, { start_date: addDays(t, 1) }),
       // the archived semester: its tasks wait in the archive
       task('t_demo12', 'תרגיל בית 5', 'intro-cs', 'done', -110),
       task('t_demo13', 'הכנה למבחן', 'intro-cs', 'done', -100, { estimate_hours: '20' }),
@@ -79,7 +83,7 @@ function seed() {
       { id: 'sg_demo2', status: 'pending', summary: 'ההגשה של תרגיל בית 2 נדחתה', table: 'tasks', op: 'update', row_id: 't_demo05',
         fields: JSON.stringify({ due_date: addDays(t, 15), due_time: '12:00' }), reason: 'לפי ההודעה במודל', by: 'Claude', created_at: now, decided_at: '', result: '' },
       { id: 'sg_demo3', status: 'pending', summary: 'משימה חדשה: הכנה לבוחן אמצע', table: 'tasks', op: 'create', row_id: '',
-        fields: JSON.stringify({ title: 'הכנה לבוחן אמצע', course: 'game-theory', due_date: addDays(t, 20), estimate_hours: 6 }), reason: 'בוחן ב-13.12', by: 'Gemini', created_at: now, decided_at: '', result: '' },
+        fields: JSON.stringify({ title: 'הכנה לבוחן אמצע', course: 'game-theory', start_date: addDays(t, 10), due_date: addDays(t, 20), estimate_hours: 6 }), reason: 'בוחן ב-13.12', by: 'Gemini', created_at: now, decided_at: '', result: '' },
     ],
     moodle_inbox: [
       { id: 'm_demo01', course: 'databases', kind: 'announcement', moodle_ref: 'post:1', posted_at: `${addDays(t, -1)} 21:04`,
@@ -136,8 +140,8 @@ export class DemoBackend {
 
   async handle(p) {
     await new Promise((r) => setTimeout(r, 150));
-    if (p.action === 'ping') return { api_version: 9, now: nowStampIL(), demo: true };
-    if (p.action === 'bootstrap') return { suggestions: [], groups: [], ...structuredClone(this.db), api_version: 9 };
+    if (p.action === 'ping') return { api_version: 10, now: nowStampIL(), demo: true };
+    if (p.action === 'bootstrap') return { suggestions: [], groups: [], ...structuredClone(this.db), api_version: 10 };
     if (p.action === 'calendars') {
       return { calendars: [{ name: 'bahr.goren@gmail.com', primary: true }, { name: 'לימודים' }, { name: 'אישי' }].map((c) => ({ id: c.name, color: '#4285F4', primary: false, ...c })),
         chosen: (this.db.settings.find((r) => r.key === 'blocks_calendar_name') || {}).value || '' };

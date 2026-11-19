@@ -9,7 +9,7 @@
 // write the same row instead of a duplicate.
 
 import { store } from './store.js';
-import { stampIL } from './dates.js';
+import { stampIL, startsLater } from './dates.js';
 
 const MIN = 60000;
 
@@ -51,7 +51,12 @@ export function start(taskId, mode) {
   if (cur) stop({ silent: true });
   const now = Date.now();
   save({ task_id: taskId, mode, phase: 'focus', running: true, seg_start: now, acc: 0, focus_start: now, cycle: 0 });
-  if (store.task(taskId)?.status === 'todo') store.saveTask({ id: taskId, status: 'in_progress' });
+  // starting work: the task is in progress, and a future task becomes a task of now (it leaves „עתידיות”)
+  const t = store.task(taskId);
+  const patch = {};
+  if (t?.status === 'todo') patch.status = 'in_progress';
+  if (t && startsLater(t)) patch.start_date = '';
+  if (Object.keys(patch).length) store.saveTask({ id: taskId, ...patch });
   if (mode === 'pomodoro') askNotifications();
   unlockAudio();
 }
